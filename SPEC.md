@@ -186,7 +186,7 @@ Add one at a time, and keep each only if the walk-forward test shows it helps:
 - **QB exit rate below actual:** simulated 12% of team-games vs 16–19% actual (the hazards were estimated on 2018–2020, when exits were rarer).
 - **Team pass tendency / clock-neutral pass shock (from Milestone 2.7):** about half the within-game pass-volume correlation is a persistent team pass tendency (pregame-predictable; templates are league-wide). A shock that leaves run volume and drive clock unchanged might avoid 2.7's side effects. Each needs its own keep test.
 - **Prop prices on real lines (from Milestone 3):** the model is overconfident against book lines and adds no information beyond them. Candidates: shrink player-level means toward the market line, or widen player distributions where the market disagrees. Each needs its own walk-forward test on saved lines.
-- **Unmatched odds player names:** 14 names in the 2026 backfill (e.g. "Hollywood Brown", "Joshua Palmer"). Fixing them needs a reviewed alias list, not fuzzy matching.
+- **Unmatched odds player names:** 13 names remain from the 2026 backfill (e.g. "Joshua Palmer"). Each needs a by-hand roster check, then an entry in the reviewed alias list (`odds_feed.REVIEWED_ALIASES`; "Hollywood Brown" → Marquise Brown was added 2026-10-26). No fuzzy matching.
 - **Milestone 4 QB items (from the README backlog):** split the offense rating into QB and non-QB parts; a data-driven prior for QBs with little history (the current −0.10 EPA prior is hand-set); tune the QB rating's prior strength and recency on 2018–2020; use Questionable/Doubtful status and practice participation for the probability that the listed starter plays.
 
 ## Final report (after each milestone and at the end)

@@ -113,11 +113,13 @@ with tab_build:
     if board.empty:
         st.warning(f"No pre-kickoff snapshot from {book} for this game.")
     else:
-        snap = pd.Timestamp(board["snapshot_time"].max())
-        age_h = (min(pd.Timestamp.now(tz="UTC"), snap if grow["played"] else pd.Timestamp.now(tz="UTC"))
-                 - snap).total_seconds() / 3600
-        st.caption(f"Prices: latest pre-kickoff snapshot from {book}, {snap:%Y-%m-%d %H:%M UTC}"
-                   + (f" ({age_h:.1f} h old)" if not grow["played"] else " (game played; closing-ish snapshot)"))
+        snap = pd.Timestamp(board["snapshot_time"].min())
+        newest = pd.Timestamp(board["snapshot_time"].max())
+        age_h = (pd.Timestamp.now(tz="UTC") - snap).total_seconds() / 3600
+        when = (f"{snap:%Y-%m-%d %H:%M UTC}" if snap == newest
+                else f"{snap:%Y-%m-%d %H:%M} to {newest:%H:%M UTC} (latest per market)")
+        st.caption(f"Prices: latest pre-kickoff snapshot from {book}, {when}"
+                   + (f"; oldest {age_h:.1f} h old" if not grow["played"] else " (game played)"))
         if not grow["played"] and age_h > 6:
             st.warning("Snapshot is more than 6 hours old: prices may have moved.")
     n_alt = int(board["alternate"].sum()) if len(board) else 0

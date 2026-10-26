@@ -45,7 +45,10 @@ def _snap_time(df: pd.DataFrame) -> pd.Series:
     return df["snapshot_ts"].fillna(df["pulled_at"])
 
 
-def _latest_pre_kickoff(df: pd.DataFrame, book: str, as_of: pd.Timestamp | None) -> pd.DataFrame:
+def _latest_pre_kickoff(df: pd.DataFrame, book: str, as_of: pd.Timestamp | None,
+                       market_col: str = "market") -> pd.DataFrame:
+    """The book's latest pre-kickoff snapshot of each market (a pull of a few
+    markets must not hide the other markets from an earlier pull)."""
     d = df[df["book"] == book].copy()
     if d.empty:
         return d
@@ -55,7 +58,7 @@ def _latest_pre_kickoff(df: pd.DataFrame, book: str, as_of: pd.Timestamp | None)
         d = d[d["t"] <= as_of]
     if d.empty:
         return d
-    return d[d["t"] == d["t"].max()]
+    return d[d["t"] == d.groupby(market_col)["t"].transform("max")]
 
 
 def load_snapshots(lines_path: Path | None = None, props_path: Path | None = None):
@@ -118,7 +121,7 @@ def market_board(game_id: str, book: str, lines: pd.DataFrame, props: pd.DataFra
                          "snapshot_time": r.t, "leg": leg})
     if len(props):
         from .odds_feed import market_from_key
-        d = _latest_pre_kickoff(props[props["game_id"] == game_id], book, as_of)
+        d = _latest_pre_kickoff(props[props["game_id"] == game_id], book, as_of, "market_key")
         for r in d.itertuples():
             key = str(r.market_key)
             alt = key.endswith("_alternate")

@@ -507,7 +507,8 @@ The 2021 → 2026 week 7 game walk-forward is in "Validation" above (independent
 
 ```bash
 python -m nflsim.odds_feed pull-lines [--dry-run] [--bookmaker KEY]                       # all upcoming games
-python -m nflsim.odds_feed pull-props [--dry-run] [--bookmaker KEY] [--days 7] [--game-id ID]
+python -m nflsim.odds_feed pull-props [--dry-run] [--bookmaker KEY] [--days 7] [--game-id ID] [--markets M ...] [--alternates]
+python -m nflsim.odds_feed remap-players               # re-match saved unmatched names (reviewed aliases; local, free)
 python -m nflsim.odds_feed latest     [--game-id ID]       # latest pre-kickoff consensus + prop coverage
 python -m nflsim.odds_feed credits    [--refresh]          # usage by category this month
 python -m nflsim.odds_feed backfill   --dry-run | --confirm [--max-calls N]   # one-time 2026 backfill
@@ -545,6 +546,9 @@ python -m nflsim.odds_feed check-books --dry-run | --confirm                # wh
 - Per-pull consensus in `odds_consensus.parquet`: median home spread and total across books, median of per-book de-vigged moneyline probabilities.
 - Games are mapped to nflverse `game_id` by both team names plus the US-Eastern kickoff date. A home/away swap on the same date is matched and flagged.
 - Players are mapped to `gsis_id` by exact normalized name within that game's two teams (pregame roster + season roster). Position only breaks ties. Anything else is left unmatched and logged with the raw name (`odds_unmatched_games.csv`, `odds_unmatched_players.csv`), never guessed.
+- **Reviewed aliases** (`odds_feed.REVIEWED_ALIASES`): a book name is mapped to a roster name only after a by-hand roster check, and the roster name must still match exactly on one of the game's two teams. So far there is one: "Hollywood Brown" → Marquise Brown (only one on a 2026 roster, PHI WR). `remap-players` applies new aliases to saved rows.
+- **`--markets`** limits a props pull to some markets (1 credit per market returned). Example: `--markets receiving_yards rushing_yards` costs ≤ 2 credits per game.
+- **Latest price per market:** the app and the real-line backtest use each book's latest pre-kickoff snapshot *per market*, so a pull of a few markets never hides the other markets from an earlier pull.
 
 **Integration.**
 - Market-anchored line priority: user `--spread/--total` → latest pre-kickoff saved pull (median of books) → nflverse → independent fallback. The output prints the source and pull time, and a WARNING when the pull is more than 6 hours older than now (or than kickoff, for past games).

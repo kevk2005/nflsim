@@ -574,8 +574,8 @@ def _median_line(x):
 
 
 def load_real_props(game_ids) -> pd.DataFrame:
-    """Saved pre-kickoff prop prices (odds feed) for these games: per game the
-    latest snapshot before kickoff, matched players only."""
+    """Saved pre-kickoff prop prices (odds feed) for these games: per game, book
+    and market the latest snapshot before kickoff, matched players only."""
     path = PROCESSED / "prop_snapshots.parquet"
     if not path.exists():
         return pd.DataFrame()
@@ -583,7 +583,7 @@ def load_real_props(game_ids) -> pd.DataFrame:
     p = p[p["game_id"].isin(set(game_ids)) & p["player_id"].notna()].copy()
     p["t"] = p["snapshot_ts"].fillna(p["pulled_at"])
     p = p[p["t"] < p["commence_time"]]          # never a post-kickoff price
-    last = p.groupby(["game_id", "book"])["t"].transform("max")
+    last = p.groupby(["game_id", "book", "market_key"])["t"].transform("max")
     return p[p["t"] == last].reset_index(drop=True)
 
 

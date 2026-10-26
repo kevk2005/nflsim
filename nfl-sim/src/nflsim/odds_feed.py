@@ -383,11 +383,20 @@ def norm_name(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+# Reviewed aliases: book name -> roster name, added only after checking the
+# roster by hand (never fuzzy). The roster name must still match exactly, on one
+# of the game's two teams.
+#   hollywood brown -> Marquise Brown: reviewed 2026-10-26, the only Marquise
+#   Brown on a 2026 roster (PHI WR, 00-0035662, on the 2026_07_DAL_PHI depth chart).
+REVIEWED_ALIASES = {"hollywood brown": "marquise brown"}
+
+
 class PlayerMapper:
     """Map a prop's player name to gsis_id using name + the game's two teams
     (+ position only to break ties). Candidates: that game's pregame roster
     (roles) and the season roster for the two teams. Exact normalized-name
-    match only; ambiguous or missing -> None (logged by the caller)."""
+    match only (or a REVIEWED_ALIASES entry, then exact); ambiguous or
+    missing -> None (logged by the caller)."""
 
     PASS_MARKETS = {"passing_yards", "passing_tds", "pass_attempts", "completions"}
 
@@ -418,7 +427,10 @@ class PlayerMapper:
 
     def match(self, raw_name: str, game_id: str | None, season: int, teams: tuple,
               market: str | None = None) -> tuple:
-        hits = self.name_index.get(norm_name(raw_name), set()) & self.candidates(game_id, season, teams)
+        cand = self.candidates(game_id, season, teams)
+        hits = self.name_index.get(norm_name(raw_name), set()) & cand
+        if not hits and norm_name(raw_name) in REVIEWED_ALIASES:
+            hits = self.name_index.get(REVIEWED_ALIASES[norm_name(raw_name)], set()) & cand
         if len(hits) > 1 and market in self.PASS_MARKETS:
             qb = {h for h in hits if self.pos.get(h) == "QB"}
             hits = qb if len(qb) == 1 else hits
@@ -490,6 +502,31 @@ def normalize_props(ev: dict, pull_id: str, pulled_at, game_id: str | None, seas
     # one unmatched record per (raw name, market)
     um = pd.DataFrame(unmatched).drop_duplicates(["raw_name", "market"]).to_dict("records") if unmatched else []
     return df, um
+
+
+def remap_saved_props(mapper: PlayerMapper | None = None, path: Path | None = None) -> dict:
+    """Re-match saved prop rows that have no player_id (e.g. after adding a
+    reviewed alias). Local only, no API call. Rows already matched are untouched."""
+    path = path or PROPS_PQ
+    if not path.exists():
+        return {"rows_checked": 0, "rows_matched": 0, "names": {}}
+    df = pd.read_parquet(path)
+    mapper = mapper or PlayerMapper()
+    sched = load_schedule().set_index("game_id")
+    miss = df["player_id"].isna() & df["game_id"].notna()
+    found, names = 0, {}
+    for (gid, raw, mkt), idx in df[miss].groupby(["game_id", "player_raw", "market"]).groups.items():
+        if gid not in sched.index:
+            continue
+        g = sched.loc[gid]
+        pid, _ = mapper.match(raw, gid, int(g["season"]), (g["home_team"], g["away_team"]), mkt)
+        if pid is not None:
+            df.loc[idx, "player_id"] = pid
+            found += len(idx)
+            names[raw] = pid
+    if found:
+        df.to_parquet(path, index=False)
+    return {"rows_checked": int(miss.sum()), "rows_matched": found, "names": names}
 
 
 def add_prop_devig(df: pd.DataFrame) -> pd.DataFrame:
@@ -672,9 +709,10 @@ def cost_lines() -> int:
     return len(GAME_MARKETS) * 1          # markets x regions (1 region: us)
 
 
-def cost_props_event(alternates: bool = False) -> int:
+def cost_props_event(alternates: bool = False, only: list | None = None) -> int:
     """Upper bound: every requested market returned, 1 region."""
-    return (len(PROP_MARKETS) + (len(ALT_PROP_MARKETS) if alternates else 0)) * 1
+    base = len(only) if only else len(PROP_MARKETS)
+    return (base + ((len(only) if only else len(ALT_PROP_MARKETS)) if alternates else 0)) * 1
 
 
 def _book_params(bookmaker: str | None) -> dict:
@@ -718,18 +756,25 @@ def upcoming_games(sched: pd.DataFrame, now: pd.Timestamp, days: int) -> pd.Data
 
 def pull_props(client: Client | None = None, dry_run: bool = False, days: int = 7,
                game_id: str | None = None, sched=None, mapper: PlayerMapper | None = None,
-               bookmaker: str | None = None, alternates: bool = False) -> dict:
+               bookmaker: str | None = None, alternates: bool = False, only: list | None = None) -> dict:
     """Live props for upcoming games. alternates=True also requests the 8
-    `_alternate` prop markets in the same per-game call (estimate 17 instead of 9)."""
+    `_alternate` prop markets in the same per-game call (estimate 17 instead of 9).
+    only: restrict to these markets.py names (e.g. ["receiving_yards"]); cheaper."""
+    if only:
+        bad = [m for m in only if m not in PROP_MARKETS]
+        if bad:
+            raise ValueError(f"unknown prop markets {bad}; valid: {', '.join(PROP_MARKETS)}")
     sched = sched if sched is not None else load_schedule()
     now = utcnow()
     games = upcoming_games(sched, now, days)
     if game_id:
         games = games[games.game_id == game_id]
-    est_each = cost_props_event(alternates)
-    markets = list(PROP_MARKETS.values()) + (list(ALT_PROP_MARKETS.values()) if alternates else [])
+    est_each = cost_props_event(alternates, only)
+    names = only or list(PROP_MARKETS)
+    markets = [PROP_MARKETS[m] for m in names] + \
+        ([ALT_PROP_MARKETS[m] for m in names if m in ALT_PROP_MARKETS] if alternates else [])
     bp = _book_params(bookmaker)
-    plan = {"bookmaker_filter": bookmaker, "alternates": alternates, "calls": [{"endpoint": f"/v4/sports/{SPORT}/events (free)", "est": 0}] +
+    plan = {"bookmaker_filter": bookmaker, "alternates": alternates, "markets": markets, "calls": [{"endpoint": f"/v4/sports/{SPORT}/events (free)", "est": 0}] +
             [{"endpoint": f"/v4/sports/{SPORT}/events/<id>/odds", "game_id": g, "est": est_each}
              for g in games.game_id],
             "est_total": est_each * len(games), "n_games": len(games)}
@@ -997,7 +1042,7 @@ def credits_report(budget: Budget | None = None) -> dict:
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m nflsim.odds_feed")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("pull-lines", "pull-props", "latest", "credits", "backfill", "check-books"):
+    for name in ("pull-lines", "pull-props", "latest", "credits", "backfill", "check-books", "remap-players"):
         p = sub.add_parser(name)
         p.add_argument("--dry-run", action="store_true")
         if name in ("pull-lines", "pull-props"):
@@ -1006,6 +1051,8 @@ def main(argv=None):
         if name == "pull-props":
             p.add_argument("--days", type=int, default=7)
             p.add_argument("--game-id")
+            p.add_argument("--markets", nargs="*", help="only these prop markets, e.g. "
+                           "receiving_yards rushing_yards (costs 1 credit per market returned)")
             p.add_argument("--alternates", action="store_true",
                            help="also pull the 8 _alternate prop markets (estimate 17 credits/game "
                                 "instead of 9); run with --dry-run first")
@@ -1024,13 +1071,16 @@ def main(argv=None):
         r = pull_lines(dry_run=a.dry_run, bookmaker=a.bookmaker)
     elif a.cmd == "pull-props":
         r = pull_props(dry_run=a.dry_run, days=a.days, game_id=a.game_id, bookmaker=a.bookmaker,
-                       alternates=a.alternates)
+                       alternates=a.alternates, only=a.markets)
     elif a.cmd == "backfill":
         r = backfill(dry_run=a.dry_run, confirm=a.confirm, max_calls=a.max_calls)
     elif a.cmd == "check-books":
         r = check_books(dry_run=a.dry_run, confirm=a.confirm)
     elif a.cmd == "latest":
         r = latest_cmd(a.game_id)
+    elif a.cmd == "remap-players":
+        r = {"dry_run": True, "note": "local only; run without --dry-run to rewrite"} if a.dry_run \
+            else remap_saved_props()
     else:
         if a.refresh and not a.dry_run:
             Client().get("/v4/sports", {}, "free", 0, "refresh remaining credits")

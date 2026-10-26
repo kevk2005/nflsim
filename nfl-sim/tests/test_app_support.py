@@ -72,6 +72,18 @@ def test_market_board_latest_pre_kickoff_and_greying():
     assert longest["leg"].item() is None
 
 
+def test_market_board_partial_pull_keeps_other_markets():
+    """A later pull of one market updates that market and leaves the rest visible."""
+    p = _props()
+    late = p[p["market_key"] == "player_pass_yds"].assign(
+        snapshot_ts=KICK - pd.Timedelta(minutes=2), point=230.5, price=-110)
+    b = A.market_board("G1", "fanatics", _lines(), pd.concat([p, late]), "PHI", "DAL")
+    pyd = b[b["market"] == "passing yards"]
+    assert len(pyd) == 1 and pyd["point"].item() == 230.5          # newest price for that market
+    assert (b["market"] == "receiving yards").any()                # other markets still shown
+    assert b["snapshot_time"].nunique() >= 2
+
+
 def test_market_board_as_of_and_empty():
     b = A.market_board("G1", "fanatics", _lines(), _props(), "PHI", "DAL",
                        as_of=KICK - pd.Timedelta(hours=2))

@@ -130,6 +130,30 @@ def test_player_mapping(mapper):
     assert F.norm_name("Odell Beckham Jr.") == F.norm_name("odell beckham")
 
 
+def test_reviewed_alias_still_needs_team(mapper):
+    pid, _ = mapper.match("Hollywood Brown", "2026_07_DAL_PHI", 2026, ("PHI", "DAL"), "receiving_yards")
+    assert pid == "00-0035662"                                      # Marquise Brown, PHI
+    assert mapper.match("Hollywood Brown", "2026_01_NE_SEA", 2026, ("SEA", "NE"),
+                        "receiving_yards")[0] is None               # not on either team
+    assert mapper.match("Hollywood Brownie", "2026_07_DAL_PHI", 2026, ("PHI", "DAL"),
+                        "receiving_yards")[0] is None               # no fuzzy matching
+
+
+def test_remap_saved_props(tmp_path, mapper):
+    p = tmp_path / "props.parquet"
+    pd.DataFrame([{"game_id": "2026_07_DAL_PHI", "player_raw": "Hollywood Brown", "market": "receiving_yards",
+                   "player_id": None},
+                  {"game_id": "2026_07_DAL_PHI", "player_raw": "Eagles D/ST", "market": "anytime_td",
+                   "player_id": None},
+                  {"game_id": "2026_07_DAL_PHI", "player_raw": "CeeDee Lamb", "market": "receiving_yards",
+                   "player_id": "already"}]).to_parquet(p, index=False)
+    r = F.remap_saved_props(mapper, p)
+    assert r["rows_checked"] == 2 and r["rows_matched"] == 1
+    d = pd.read_parquet(p)
+    assert d["player_id"].iloc[0] == "00-0035662" and pd.isna(d["player_id"].iloc[1])
+    assert d["player_id"].iloc[2] == "already"
+
+
 def test_props_parse_devig(mapper):
     df, um = F.normalize_props(fixture("TESTONLY_event_props.json"), "pp", pd.Timestamp("2024-09-05T23:30Z"),
                                "2024_01_BAL_KC", 2024, mapper)
@@ -216,6 +240,10 @@ def test_dry_run_makes_no_calls(isolated, sched):
     assert r["dry_run"] and r["est_total"] == 9 * r["n_games"]
     r = F.pull_props(client=c, dry_run=True, sched=sched, alternates=True)
     assert r["dry_run"] and r["alternates"] and r["est_total"] == 17 * r["n_games"]
+    r = F.pull_props(client=c, dry_run=True, sched=sched, only=["receiving_yards", "rushing_yards"])
+    assert r["est_total"] == 2 * r["n_games"] and r["markets"] == ["player_reception_yds", "player_rush_yds"]
+    with pytest.raises(ValueError):
+        F.pull_props(client=c, dry_run=True, sched=sched, only=["longest_reception"])
     r = F.pull_lines(client=c, dry_run=True, bookmaker="fanatics")
     assert r["calls"][0]["bookmakers"] == "fanatics" and r["est_total"] == 3
     assert t.calls == [] and not (isolated / "odds" / "ledger.jsonl").exists()
