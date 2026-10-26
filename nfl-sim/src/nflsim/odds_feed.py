@@ -63,6 +63,15 @@ PROP_MARKETS = {
     "anytime_td": "player_anytime_td",
 }
 KEY_TO_MARKET = {v: k for k, v in PROP_MARKETS.items()}
+# Alternate prop lines (betting-markets docs, read 2026-10-26): every over/under
+# market above has an `_alternate` key; anytime TD has none. Per-event markets,
+# billed like props (unique markets returned x regions). Opt-in: --alternates.
+ALT_PROP_MARKETS = {m: k + "_alternate" for m, k in PROP_MARKETS.items() if m != "anytime_td"}
+
+
+def market_from_key(key: str) -> str | None:
+    """markets.py name for an API prop key, standard or `_alternate`."""
+    return KEY_TO_MARKET.get(key) or KEY_TO_MARKET.get(key.removesuffix("_alternate"))
 # Bookmaker keys in the docs' US regions (bookmaker-apis page). --bookmaker must be one of these.
 US_BOOKMAKERS = {
     "us": ["betonlineag", "betmgm", "betrivers", "betus", "bovada", "williamhill_us", "draftkings",
@@ -456,7 +465,7 @@ def normalize_props(ev: dict, pull_id: str, pulled_at, game_id: str | None, seas
     cache = {}
     for bk in ev.get("bookmakers", []):
         for mk in bk.get("markets", []):
-            market = KEY_TO_MARKET.get(mk["key"])
+            market = market_from_key(mk["key"])
             if market is None:
                 continue
             for oc in mk.get("outcomes", []):
@@ -663,8 +672,9 @@ def cost_lines() -> int:
     return len(GAME_MARKETS) * 1          # markets x regions (1 region: us)
 
 
-def cost_props_event() -> int:
-    return len(PROP_MARKETS) * 1
+def cost_props_event(alternates: bool = False) -> int:
+    """Upper bound: every requested market returned, 1 region."""
+    return (len(PROP_MARKETS) + (len(ALT_PROP_MARKETS) if alternates else 0)) * 1
 
 
 def _book_params(bookmaker: str | None) -> dict:
@@ -708,15 +718,18 @@ def upcoming_games(sched: pd.DataFrame, now: pd.Timestamp, days: int) -> pd.Data
 
 def pull_props(client: Client | None = None, dry_run: bool = False, days: int = 7,
                game_id: str | None = None, sched=None, mapper: PlayerMapper | None = None,
-               bookmaker: str | None = None) -> dict:
+               bookmaker: str | None = None, alternates: bool = False) -> dict:
+    """Live props for upcoming games. alternates=True also requests the 8
+    `_alternate` prop markets in the same per-game call (estimate 17 instead of 9)."""
     sched = sched if sched is not None else load_schedule()
     now = utcnow()
     games = upcoming_games(sched, now, days)
     if game_id:
         games = games[games.game_id == game_id]
-    est_each = cost_props_event()
+    est_each = cost_props_event(alternates)
+    markets = list(PROP_MARKETS.values()) + (list(ALT_PROP_MARKETS.values()) if alternates else [])
     bp = _book_params(bookmaker)
-    plan = {"bookmaker_filter": bookmaker,"calls": [{"endpoint": f"/v4/sports/{SPORT}/events (free)", "est": 0}] +
+    plan = {"bookmaker_filter": bookmaker, "alternates": alternates, "calls": [{"endpoint": f"/v4/sports/{SPORT}/events (free)", "est": 0}] +
             [{"endpoint": f"/v4/sports/{SPORT}/events/<id>/odds", "game_id": g, "est": est_each}
              for g in games.game_id],
             "est_total": est_each * len(games), "n_games": len(games)}
@@ -744,7 +757,7 @@ def pull_props(client: Client | None = None, dry_run: bool = False, days: int = 
             break
         pulled = utcnow()
         data, hdr = client.get(f"/v4/sports/{SPORT}/events/{ev['id']}/odds",
-                               {**bp, "markets": ",".join(PROP_MARKETS.values()),
+                               {**bp, "markets": ",".join(markets),
                                 "oddsFormat": "american", "dateFormat": "iso"}, "props", est_each, gid)
         tag = f"{gid}_{_stamp(pulled)}" + (f"_{bookmaker}" if bookmaker else "")
         pid = f"live_props_{tag}"
@@ -993,6 +1006,9 @@ def main(argv=None):
         if name == "pull-props":
             p.add_argument("--days", type=int, default=7)
             p.add_argument("--game-id")
+            p.add_argument("--alternates", action="store_true",
+                           help="also pull the 8 _alternate prop markets (estimate 17 credits/game "
+                                "instead of 9); run with --dry-run first")
         if name in ("backfill", "check-books"):
             p.add_argument("--confirm", action="store_true",
                            help="actually spend historical credits (after an approved --dry-run)")
@@ -1007,7 +1023,8 @@ def main(argv=None):
     if a.cmd == "pull-lines":
         r = pull_lines(dry_run=a.dry_run, bookmaker=a.bookmaker)
     elif a.cmd == "pull-props":
-        r = pull_props(dry_run=a.dry_run, days=a.days, game_id=a.game_id, bookmaker=a.bookmaker)
+        r = pull_props(dry_run=a.dry_run, days=a.days, game_id=a.game_id, bookmaker=a.bookmaker,
+                       alternates=a.alternates)
     elif a.cmd == "backfill":
         r = backfill(dry_run=a.dry_run, confirm=a.confirm, max_calls=a.max_calls)
     elif a.cmd == "check-books":

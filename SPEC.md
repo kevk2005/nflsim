@@ -146,7 +146,14 @@ Hypothesis: real games have a shared per-game passing shock (one team's whole pa
 3. **Keep only if** QB–receiver correlations move clearly toward actual **without** widening player stat distributions beyond actual and **without** hurting game metrics (Brier, log loss, score error). Otherwise leave it off and record the result.
 
 ## Milestone 3: Backtest and interface
-**Status: NOT STARTED**
+**Status: DONE**
+
+- Prop/SGP walk-forward, 2024 → 2026 wk 7 (676 games), 4 configs, pass shock off.
+  - Kept: market_anchored, QB exits off. The margin is tiny, and exits off overstates QB volume.
+  - Props at self-set lines are well calibrated (135,084 props; every bucket within ~1.2 points).
+  - Synthetic SGPs: K/N beats the independence product (log loss 0.5245 vs 0.5388) but still runs about 1.5 points low (25,626 parlays, noisy).
+- Real-line check (106 games, 2026 backfill): the market beats the model in every prop market (Brier 0.2597 vs 0.2469), and the model adds no detectable information beyond the market line. ROI on 13,103 bets is −2.6% (CI −6.6% to +1.8%): not a betting signal.
+- App: market browser (default fanatics), parlay builder with K/N, CI, independence benchmark, fair/offered odds, ROI, correlations, MC vs model uncertainty and missing data. It warns on QB + own WR/TE, greys out what it can't price, grades and logs parlays, and has a backtest page. Alternate lines supported (`pull-props --alternates`, ≤ 8 extra credits/game) but not pulled.
 
 **Build:**
 1. `backtest.py`: retrain **once per week** using only data before that week. For each historical game, simulate and record predictions. Report: win probability calibration, score error, prop Brier score and log loss at self-set lines, calibration charts by market and probability bucket, results by season. For parlays, generate synthetic same-game parlays from historical games and check calibration of joint probabilities; report sample sizes and note that this check is noisy.
@@ -178,6 +185,7 @@ Add one at a time, and keep each only if the walk-forward test shows it helps:
 - **End-of-game clock, possessions and timeouts:** too few close games reach the last 2:00, the one-score share is low (45.5% vs 49.8%), ties are about double actual (0.65% vs 0.33%), and timeouts are not modeled.
 - **QB exit rate below actual:** simulated 12% of team-games vs 16–19% actual (the hazards were estimated on 2018–2020, when exits were rarer).
 - **Team pass tendency / clock-neutral pass shock (from Milestone 2.7):** about half the within-game pass-volume correlation is a persistent team pass tendency (pregame-predictable; templates are league-wide). A shock that leaves run volume and drive clock unchanged might avoid 2.7's side effects. Each needs its own keep test.
+- **Prop prices on real lines (from Milestone 3):** the model is overconfident against book lines and adds no information beyond them. Candidates: shrink player-level means toward the market line, or widen player distributions where the market disagrees. Each needs its own walk-forward test on saved lines.
 - **Unmatched odds player names:** 14 names in the 2026 backfill (e.g. "Hollywood Brown", "Joshua Palmer"). Fixing them needs a reviewed alias list, not fuzzy matching.
 - **Milestone 4 QB items (from the README backlog):** split the offense rating into QB and non-QB parts; a data-driven prior for QBs with little history (the current −0.10 EPA prior is hand-set); tune the QB rating's prior strength and recency on 2018–2020; use Questionable/Doubtful status and practice participation for the probability that the listed starter plays.
 

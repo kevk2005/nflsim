@@ -292,12 +292,28 @@ def main(argv=None):
     ap.add_argument("--pass-shock", default="off", choices=["on", "off"],
                     help="shared per-game passing shock (Milestone 2.7; default off)")
     ap.add_argument("--pass-shock-sd", type=float, help="shock size when on (default PASS_SHOCK_SD)")
-    ap.add_argument("--tag", default="", help="suffix for --players output files")
+    ap.add_argument("--tag", default="", help="suffix for --players/--props output files")
+    ap.add_argument("--props", action="store_true",
+                    help="M3: props at self-set lines, synthetic SGPs and real-line ROI walk-forward")
+    ap.add_argument("--prop-seasons", type=int, nargs="*", default=[2024, 2025, 2026])
     a = ap.parse_args(argv)
     qx = a.qb_exits == "on"
     from .simulator import PASS_SHOCK_SD
     shk = (a.pass_shock_sd if a.pass_shock_sd is not None else PASS_SHOCK_SD) if a.pass_shock == "on" else 0.0
     sx = _suffix(a.mode, qx, shk) + a.tag
+    if a.props:
+        if a.reuse:
+            pp = pd.read_parquet(PROCESSED / f"prop_wf_props{sx}.parquet")
+            ps_ = pd.read_parquet(PROCESSED / f"prop_wf_sgp{sx}.parquet")
+            pr_ = pd.read_parquet(PROCESSED / f"prop_wf_real{sx}.parquet")
+        else:
+            pp, ps_, pr_ = prop_walk_forward(tuple(a.prop_seasons), a.sims if a.sims != 4000 else 2000,
+                                             mode=a.mode, qb_exits=qx, pass_shock=shk, tag=a.tag)
+        rep_ = {"mode": a.mode, "qb_exits": a.qb_exits, "pass_shock_sd": shk,
+                "seasons": a.prop_seasons, **prop_report(pp, ps_, pr_)}
+        (PROCESSED / f"prop_wf_report{sx}.json").write_text(json.dumps(rep_, indent=2, default=float))
+        print(json.dumps({k: rep_[k] for k in ("props_overall", "sgp_overall")}, indent=1, default=float))
+        return
     if a.players:
         if a.reuse:
             pr = pd.read_parquet(PROCESSED / f"player_wf{sx}.parquet")
@@ -478,6 +494,406 @@ def correlation_report(gamecorr: list) -> pd.DataFrame:
                     "sim_corr_pooled": float(np.corrcoef(sa, sb)[0, 1]),
                     "actual_corr": float(np.corrcoef(xa, xb)[0, 1])})
     return pd.DataFrame(out)
+
+
+
+# --------------------------------------------------------------------------- #
+# Milestone 3: props at self-set lines, synthetic SGPs, real-line prop ROI
+# --------------------------------------------------------------------------- #
+# Official nflverse weekly columns per market. Anytime TD is graded the way books
+# settle it (any non-passing TD: rushing, receiving, return/fumble recovery);
+# the simulator credits no return TDs, so it is slightly low there (README).
+PROP_ACTUAL = {"passing_yards": "passing_yards", "passing_tds": "passing_tds",
+               "pass_attempts": "attempts", "completions": "completions",
+               "rushing_yards": "rushing_yards", "rush_attempts": "carries",
+               "receptions": "receptions", "receiving_yards": "receiving_yards"}
+TD_COLS = ("rushing_tds", "receiving_tds", "special_teams_tds", "fumble_recovery_tds")
+ROLE_MARKETS = {
+    "QB1": ["passing_yards", "passing_tds", "pass_attempts", "completions", "rushing_yards"],
+    "RB1": ["rushing_yards", "rush_attempts", "receptions", "receiving_yards", "anytime_td"],
+    "RB2": ["rushing_yards", "rush_attempts", "receptions", "anytime_td"],
+    "WR1": ["receptions", "receiving_yards", "anytime_td"],
+    "WR2": ["receptions", "receiving_yards", "anytime_td"],
+    "WR3": ["receptions", "receiving_yards", "anytime_td"],
+    "TE1": ["receptions", "receiving_yards", "anytime_td"],
+}
+# Self-set fixed lines (no prices: nflverse has no prop lines). Same grid for every
+# player in a role group, so model probabilities spread over the whole range.
+FIXED_LINES = {
+    "passing_yards": [174.5, 224.5, 274.5], "passing_tds": [0.5, 1.5, 2.5],
+    "pass_attempts": [29.5, 34.5, 39.5], "completions": [19.5, 24.5],
+    "rushing_yards": [14.5, 29.5, 49.5, 74.5, 99.5], "rush_attempts": [4.5, 9.5, 14.5, 19.5],
+    "receptions": [1.5, 2.5, 4.5, 6.5], "receiving_yards": [19.5, 39.5, 59.5, 79.5, 99.5],
+}
+# Synthetic same-game parlays per team: (name, legs). Leg = (who, market, side);
+# who is a model role, "team" (this team's moneyline) or "game" (closing total).
+# Player legs use the "median" self-set line (model median rounded to x.5) or a
+# fixed line (SGP_FIXED, by role and market).
+SGP_TEMPLATES = [
+    ("QB+WR1", [("QB1", "passing_yards", "over"), ("WR1", "receiving_yards", "over")]),
+    ("QB+WR2", [("QB1", "passing_yards", "over"), ("WR2", "receiving_yards", "over")]),
+    ("QB+TE1", [("QB1", "passing_yards", "over"), ("TE1", "receiving_yards", "over")]),
+    ("QB+WR1+WR2", [("QB1", "passing_yards", "over"), ("WR1", "receiving_yards", "over"),
+                    ("WR2", "receiving_yards", "over")]),
+    ("WR1+WR2", [("WR1", "receiving_yards", "over"), ("WR2", "receiving_yards", "over")]),
+    ("QB+total", [("QB1", "passing_yards", "over"), ("game", "total", "over")]),
+    ("RB1+ML", [("RB1", "rushing_yards", "over"), ("team", "moneyline", "win")]),
+    ("QBatt+ML", [("QB1", "pass_attempts", "over"), ("team", "moneyline", "win")]),
+    ("RB1+QB", [("RB1", "rushing_yards", "over"), ("QB1", "passing_yards", "over")]),
+    ("ML+total", [("team", "moneyline", "win"), ("game", "total", "over")]),
+    ("QBtd+WR1td", [("QB1", "passing_tds", "over"), ("WR1", "anytime_td", "yes")]),
+]
+SGP_FIXED = {("QB1", "passing_yards"): 249.5, ("QB1", "pass_attempts"): 34.5,
+             ("QB1", "passing_tds"): 1.5, ("WR1", "receiving_yards"): 64.5,
+             ("WR2", "receiving_yards"): 44.5, ("TE1", "receiving_yards"): 34.5,
+             ("RB1", "rushing_yards"): 59.5}
+SIM_MARKET = {"passing_yards": "pass_yards", "passing_tds": "pass_td", "pass_attempts": "pass_att",
+              "completions": "completions", "rushing_yards": "rush_yards", "rush_attempts": "rush_att",
+              "receptions": "receptions", "receiving_yards": "rec_yards"}
+MIN_ACTIVE = 100   # simulations a player must be active in for a probability
+
+
+def _sim_values(st, k, market):
+    if market == "anytime_td":
+        return st["rush_td"][:, k] + st["rec_td"][:, k]
+    return st[SIM_MARKET[market]][:, k]
+
+
+def _act_value(a, market):
+    """Official value; None when the player did not play."""
+    if a is None:
+        return None
+    if market == "anytime_td":
+        return float(sum(float(a[c]) for c in TD_COLS if c in a and pd.notna(a[c])))
+    v = a.get(PROP_ACTUAL[market])
+    return float(v) if pd.notna(v) else 0.0
+
+
+def _median_line(x):
+    return float(np.floor(np.median(x))) + 0.5
+
+
+def load_real_props(game_ids) -> pd.DataFrame:
+    """Saved pre-kickoff prop prices (odds feed) for these games: per game the
+    latest snapshot before kickoff, matched players only."""
+    path = PROCESSED / "prop_snapshots.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    p = pd.read_parquet(path)
+    p = p[p["game_id"].isin(set(game_ids)) & p["player_id"].notna()].copy()
+    p["t"] = p["snapshot_ts"].fillna(p["pulled_at"])
+    p = p[p["t"] < p["commence_time"]]          # never a post-kickoff price
+    last = p.groupby(["game_id", "book"])["t"].transform("max")
+    return p[p["t"] == last].reset_index(drop=True)
+
+
+def prop_walk_forward(seasons=(2024, 2025, 2026), n_sims: int = 2000, seed: int = 0,
+                      mode: str = "independent", qb_exits: bool = True, pass_shock: float = 0.0,
+                      verbose: bool = True, save: bool = True, tag: str = ""):
+    """Weekly walk-forward for Milestone 3. Every week the team model is refit on
+    data before the week's first game and player usage on games before it.
+
+    Returns three tables:
+      props: one row per (player, market, self-set line): P(over | active) from
+             the simulation, official result (players who did not play are VOID
+             and dropped, as books void them).
+      sgp:   synthetic same-game parlays (SGP_TEMPLATES): joint P = K/N over the
+             simulations where every leg's player is active and no leg pushes,
+             the independence benchmark (product of the leg rates in the same
+             simulations), and whether every leg actually won.
+      real:  every saved pre-kickoff prop price (odds feed) for these games, with
+             the model's P(win), P(push) for that side and the official result.
+    """
+    from .ingest import load
+    from .pipeline import load_context, simulate_game
+    ctx = load_context()
+    games = ctx.games
+    test = games[games["season"].isin(seasons) & games["label_home_score"].notna()]
+    stats = load("player_stats", list(seasons)).to_pandas().set_index(["game_id", "player_id"])
+    played_idx = ctx.player_games.set_index(["game_id", "player_id"]).index
+    real_all = load_real_props(test["game_id"])
+    real_by_game = {k: v for k, v in real_all.groupby("game_id")} if len(real_all) else {}
+    rng = np.random.default_rng(seed)
+    props, sgps, reals = [], [], []
+    t0 = time.time()
+    for (season, week), wk in test.groupby(["season", "week"], sort=True):
+        cutoff = wk["gameday"].min()
+        tm = fit_team_model(cutoff, ctx.drives, ctx.pat, ctx.gf)
+        for g in wk.itertuples():
+            sg = simulate_game(ctx, g.game_id, n_sims, seed=int(rng.integers(1 << 31)), cutoff=cutoff,
+                               team_model=tm, mode=mode, qb_exits=qb_exits, pass_shock=pass_shock)
+            hs, as_ = sg.sim.home_score, sg.sim.away_score
+            act_h, act_a = g.label_home_score, g.label_away_score
+            tline = g.mkt_total_line
+            base = {"game_id": g.game_id, "season": season, "week": week}
+
+            def actual_row(pid):
+                if (g.game_id, pid) not in played_idx:
+                    return None
+                return stats.loc[(g.game_id, pid)] if (g.game_id, pid) in stats.index else {}
+
+            for side, tp in sg.players.teams.items():
+                st = sg.players.stats[side]
+                act = sg.players.active[side]
+                roles = _roles_from_model(tp)
+                by_role = {r: k for k, r in roles.items()}
+                won = (hs > as_) if side == 0 else (as_ > hs)
+                tie = hs == as_
+                act_won = (act_h > act_a) if side == 0 else (act_a > act_h)
+                # -------- props at self-set lines
+                for k, role in roles.items():
+                    if role not in ROLE_MARKETS or act[:, k].sum() < MIN_ACTIVE:
+                        continue
+                    pid = tp.ids[k]
+                    a = actual_row(pid)
+                    for mkt in ROLE_MARKETS[role]:
+                        x = _sim_values(st, k, mkt)[act[:, k]]
+                        if mkt == "anytime_td":
+                            lines = [("yes", 0.5)]
+                        else:
+                            lines = [("median", _median_line(x))] + [("fixed", l) for l in FIXED_LINES[mkt]]
+                        av = _act_value(a, mkt)
+                        for kind, line in lines:
+                            props.append({**base, "team": tp.team, "player_id": pid, "role": role,
+                                          "market": mkt, "line_type": kind, "line": line,
+                                          "p_over": float((x > line).mean()),
+                                          "sim_mean": float(x.mean()), "p_active": float(act[:, k].mean()),
+                                          "played": av is not None,
+                                          "actual": av, "y": None if av is None else float(av > line)})
+                # -------- synthetic SGPs
+                for name, legs in SGP_TEMPLATES:
+                    for variant in ("median", "fixed"):
+                        ok = np.ones(n_sims, bool)
+                        win = np.ones(n_sims, bool)
+                        leg_w, act_ok, act_hit, desc = [], True, True, []
+                        for who, mkt, sd in legs:
+                            if who == "game":
+                                if pd.isna(tline):
+                                    act_ok = False
+                                    break
+                                tot = hs + as_
+                                ok &= tot != tline
+                                w = tot > tline
+                                at = act_h + act_a
+                                act_ok &= at != tline
+                                act_hit &= at > tline
+                                desc.append(f"total o{tline:g}")
+                            elif who == "team":
+                                ok &= ~tie
+                                w = won
+                                act_ok &= act_h != act_a
+                                act_hit &= bool(act_won)
+                                desc.append(f"{tp.team} ML")
+                            else:
+                                k = by_role.get(who)
+                                if k is None:
+                                    act_ok = False
+                                    break
+                                xs = _sim_values(st, k, mkt)
+                                if mkt == "anytime_td":
+                                    line = 0.5
+                                elif variant == "median":
+                                    xa = xs[act[:, k]]
+                                    if len(xa) < MIN_ACTIVE:
+                                        act_ok = False
+                                        break
+                                    line = _median_line(xa)
+                                else:
+                                    line = SGP_FIXED[(who, mkt)]
+                                ok &= act[:, k]
+                                w = xs > line
+                                av = _act_value(actual_row(tp.ids[k]), mkt)
+                                if av is None:
+                                    act_ok = False
+                                    break
+                                act_hit &= av > line
+                                desc.append(f"{who} {mkt} o{line:g}")
+                            win &= w
+                            leg_w.append(w)
+                        if not act_ok or ok.sum() < MIN_ACTIVE or len(leg_w) != len(legs):
+                            continue
+                        if variant == "fixed" and all(m == "anytime_td" or w_ in ("team", "game")
+                                                      for w_, m, _ in legs):
+                            continue   # no fixed-line leg: identical to the median variant
+                        p_legs = [float(w[ok].mean()) for w in leg_w]
+                        sgps.append({**base, "team": tp.team, "template": name, "variant": variant,
+                                     "legs": " + ".join(desc), "n_legs": len(legs),
+                                     "n_valid_sims": int(ok.sum()), "p_joint": float(win[ok].mean()),
+                                     "p_indep": float(np.prod(p_legs)),
+                                     "p_legs": p_legs, "y": float(act_hit)})
+            # -------- real saved prices (odds feed)
+            rp = real_by_game.get(g.game_id)
+            if rp is not None:
+                cache = {}
+                for r in rp.itertuples():
+                    key = (r.player_id, r.market, r.point, r.side)
+                    if key not in cache:
+                        cache[key] = None
+                        for side, tp in sg.players.teams.items():
+                            if r.player_id in tp.ids:
+                                k = tp.ids.index(r.player_id)
+                                act = sg.players.active[side][:, k]
+                                if act.sum() >= MIN_ACTIVE:
+                                    x = _sim_values(sg.players.stats[side], k, r.market)[act]
+                                    if r.market == "anytime_td":
+                                        pw, pp = float((x >= 1).mean()), 0.0
+                                        if r.side == "no":
+                                            pw = 1 - pw
+                                    else:
+                                        pp = float((x == r.point).mean())
+                                        pw = float((x > r.point).mean() if r.side == "over"
+                                                   else (x < r.point).mean())
+                                    cache[key] = (pw, pp, float(act.mean()))
+                    m = cache[key]
+                    av = _act_value(actual_row(r.player_id), r.market)
+                    if av is None:
+                        res = "void"
+                    elif r.market == "anytime_td":
+                        res = "win" if (av >= 1) == (r.side == "yes") else "loss"
+                    else:
+                        res = ("push" if av == r.point else
+                               "win" if (av > r.point) == (r.side == "over") else "loss")
+                    reals.append({**base, "book": r.book, "player_id": r.player_id,
+                                  "player_raw": r.player_raw, "market": r.market, "side": r.side,
+                                  "point": r.point, "price": r.price, "fair_prob": r.fair_prob,
+                                  "snapshot": r.t, "source": r.source,
+                                  "p_win": None if m is None else m[0], "p_push": None if m is None else m[1],
+                                  "p_active": None if m is None else m[2],
+                                  "actual": av, "result": res})
+        if verbose:
+            print(f"{season} wk{week:>2}: {len(wk)} games, {time.time() - t0:.0f}s", flush=True)
+    props, sgps, reals = pd.DataFrame(props), pd.DataFrame(sgps), pd.DataFrame(reals)
+    if save:
+        sx = _suffix(mode, qb_exits, pass_shock) + tag
+        props.to_parquet(PROCESSED / f"prop_wf_props{sx}.parquet", index=False)
+        sgps.to_parquet(PROCESSED / f"prop_wf_sgp{sx}.parquet", index=False)
+        reals.to_parquet(PROCESSED / f"prop_wf_real{sx}.parquet", index=False)
+    return props, sgps, reals
+
+
+def _calib(p, y, bins=(0, .1, .2, .3, .4, .5, .6, .7, .8, .9, 1.0)):
+    b = pd.cut(p, bins, include_lowest=True)
+    t = pd.DataFrame({"p": p, "y": y, "b": b}).groupby("b", observed=True).agg(
+        n=("y", "size"), pred=("p", "mean"), actual=("y", "mean"))
+    return [{"bucket": str(k), **{kk: float(vv) for kk, vv in v.items()}} for k, v in t.iterrows()]
+
+
+def _scores(p, y):
+    p, y = np.asarray(p, float), np.asarray(y, float)
+    return {"n": int(len(p)), "mean_pred": float(p.mean()), "actual_rate": float(y.mean()),
+            "brier": brier(p, y), "log_loss": log_loss(p, y, eps=1e-3)}
+
+
+def prop_report(props: pd.DataFrame, sgp: pd.DataFrame, real: pd.DataFrame | None = None) -> dict:
+    """Calibration of props (self-set lines) and synthetic SGPs; real-line ROI."""
+    out = {}
+    d = props[props["played"]].copy()
+    d["y"] = d["y"].astype(float)
+    out["props_overall"] = _scores(d["p_over"], d["y"])
+    # Reference only: Brier of the in-sample base rate for the same role/market/line type
+    # (a skill-score yardstick, not a pregame forecast).
+    clim = d.groupby(["role", "market", "line_type", "line"])["y"].transform("mean")
+    out["props_overall"]["brier_insample_base_rate"] = brier(clim.to_numpy(), d["y"].to_numpy())
+    out["props_by_market"] = {}
+    for (mkt, kind), x in d.groupby(["market", "line_type"]):
+        c = x.groupby(["role", "line"])["y"].transform("mean")
+        out["props_by_market"][f"{mkt}|{kind}"] = {**_scores(x["p_over"], x["y"]),
+                                                    "brier_insample_base_rate": brier(c.to_numpy(), x["y"].to_numpy()),
+                                                    "calibration": _calib(x["p_over"], x["y"])}
+    out["props_by_season"] = {int(s): _scores(x["p_over"], x["y"]) for s, x in d.groupby("season")}
+    out["props_calibration"] = _calib(d["p_over"], d["y"])
+    out["props_void_rate"] = float(1 - props["played"].mean())
+    out["props_mean_p_active_when_void"] = float(props.loc[~props["played"], "p_active"].mean()) \
+        if (~props["played"]).any() else None
+    # SGPs
+    s = sgp.copy()
+    out["sgp_overall"] = {"joint": _scores(s["p_joint"], s["y"]), "independence": _scores(s["p_indep"], s["y"])}
+    out["sgp_by_template"] = {}
+    for (t, v), x in s.groupby(["template", "variant"], sort=False):
+        n, k = len(x), x["y"].sum()
+        lo, hi = _wilson(int(k), n)
+        out["sgp_by_template"][f"{t}|{v}"] = {
+            "n": n, "mean_p_joint": float(x["p_joint"].mean()), "mean_p_indep": float(x["p_indep"].mean()),
+            "actual_rate": float(k / n), "actual_ci95": [lo, hi],
+            "brier_joint": brier(x["p_joint"], x["y"]), "brier_indep": brier(x["p_indep"], x["y"]),
+            "log_loss_joint": log_loss(x["p_joint"], x["y"], 1e-3),
+            "log_loss_indep": log_loss(x["p_indep"], x["y"], 1e-3)}
+    out["sgp_calibration_joint"] = _calib(s["p_joint"], s["y"])
+    out["sgp_calibration_indep"] = _calib(s["p_indep"], s["y"])
+    out["sgp_by_season"] = {int(k): {"joint": _scores(x["p_joint"], x["y"]),
+                                     "independence": _scores(x["p_indep"], x["y"])}
+                            for k, x in s.groupby("season")}
+    out["sgp_note"] = ("Synthetic SGPs from the same games share players and game outcomes, so they are "
+                       "not independent observations; per-template rates and calibration are noisy.")
+    if real is not None and len(real):
+        out["real_lines"] = real_line_report(real)
+    return out
+
+
+def _wilson(k, n, z=1.959964):
+    from .parlay import wilson_ci
+    return [float(v) for v in wilson_ci(k, n, z)]
+
+
+def real_line_report(real: pd.DataFrame, ev_thresholds=(0.0, 0.05), seed: int = 0) -> dict:
+    """Saved real prices: model vs market calibration and flat-stake ROI.
+
+    Betting rule (fixed in advance, not tuned): for each (game, player, market,
+    line, side), take the best price across books (or one book); bet 1 unit when
+    the model's EV at that price is >= the threshold. Settled on official stats:
+    void (player did not play) and push return the stake. 95% CI by bootstrap
+    over games (bets in a game are not independent)."""
+    from .odds import american_to_decimal
+    r = real.dropna(subset=["p_win"]).copy()
+    out = {"n_rows": int(len(real)), "n_rows_priced": int(len(r)),
+           "n_games": int(real["game_id"].nunique()), "books": sorted(real["book"].unique().tolist()),
+           "snapshots": "latest pre-kickoff snapshot per game and book (2026 backfill + live pulls)"}
+    # Calibration on decided bets, model vs the book's de-vigged probability: two-sided
+    # markets, over side only (the under is its mirror image)
+    dec = r[r["result"].isin(["win", "loss"]) & (r["side"] == "over")].copy()
+    dec["y"] = (dec["result"] == "win").astype(float)
+    dec["p_model"] = dec["p_win"] / (1 - dec["p_push"]).clip(lower=1e-9)
+    two = dec.dropna(subset=["fair_prob"])
+    out["calibration_two_sided"] = {
+        "n": int(len(two)), "n_games": int(two["game_id"].nunique()),
+        "model": _scores(two["p_model"].clip(1e-3, 1 - 1e-3), two["y"]),
+        "market_devigged": _scores(two["fair_prob"].clip(1e-3, 1 - 1e-3), two["y"]),
+        "by_market": {m: {"n": int(len(x)), "brier_model": brier(x["p_model"], x["y"]),
+                          "brier_market": brier(x["fair_prob"], x["y"])}
+                      for m, x in two.groupby("market")}}
+    r["dec"] = american_to_decimal(r["price"].to_numpy(float))
+    r["ev"] = r["p_win"] * (r["dec"] - 1) - (1 - r["p_win"] - r["p_push"])
+    r["ret"] = np.select([r["result"] == "win", r["result"].isin(["push", "void"])], [r["dec"], 1.0], 0.0)
+    keys = ["game_id", "player_id", "market", "point", "side"]
+    rng = np.random.default_rng(seed)
+    out["roi"] = {}
+    for scope in ("best_price_all_books", "fanatics"):
+        x = r if scope == "best_price_all_books" else r[r["book"] == "fanatics"]
+        if x.empty:
+            continue
+        x = x.sort_values("dec", ascending=False).drop_duplicates(keys)
+        for th in ev_thresholds:
+            b = x[x["ev"] >= th]
+            res = {"n_bets": int(len(b)), "n_games": int(b["game_id"].nunique())}
+            if len(b):
+                prof = b["ret"] - 1
+                res.update({"units_profit": float(prof.sum()), "roi": float(prof.mean()),
+                            "mean_model_ev": float(b["ev"].mean()),
+                            "win_rate_decided": float((b["result"] == "win").sum()
+                                                      / max(b["result"].isin(["win", "loss"]).sum(), 1))})
+                gp = prof.groupby(b["game_id"]).agg(["sum", "size"])
+                bs = []
+                for _ in range(2000):
+                    i = rng.integers(0, len(gp), len(gp))
+                    bs.append(gp["sum"].to_numpy()[i].sum() / gp["size"].to_numpy()[i].sum())
+                res["roi_ci95_bootstrap_games"] = [float(np.quantile(bs, .025)), float(np.quantile(bs, .975))]
+                res["by_market"] = {m: {"n": int(len(y)), "roi": float((y["ret"] - 1).mean())}
+                                    for m, y in b.groupby("market")}
+            out["roi"][f"{scope}|ev>={th:g}"] = res
+    out["note"] = (f"Real prices exist only for {out['n_games']} games (2026 weeks 1-7 backfill plus live "
+                   "pulls of completed games). ROI on this sample is very noisy; it is not evidence "
+                   "of profitability.")
+    return out
 
 
 if __name__ == "__main__":

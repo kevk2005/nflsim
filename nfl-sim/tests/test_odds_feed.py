@@ -195,6 +195,18 @@ def test_client_refuses_before_calling_and_logs_without_key(isolated):
         assert FAKE_KEY not in p.read_text()                       # nor saved in raw files
 
 
+def test_alternate_prop_keys_parse_to_base_market(mapper):
+    ev = fixture("TESTONLY_event_props.json")
+    ev = json.loads(json.dumps(ev))
+    ev["bookmakers"][0]["markets"].append(
+        {"key": "player_pass_yds_alternate", "outcomes": [
+            {"name": "Over", "description": "Patrick Mahomes", "price": 210, "point": 299.5}]})
+    df, _ = F.normalize_props(ev, "pp", pd.Timestamp("2024-09-05T23:30Z"), "2024_01_BAL_KC", 2024, mapper)
+    alt = df[df.market_key == "player_pass_yds_alternate"]
+    assert len(alt) == 1 and alt.market.iloc[0] == "passing_yards" and alt.player_id.iloc[0] == "00-0033873"
+    assert alt.fair_prob.isna().all()
+
+
 def test_dry_run_makes_no_calls(isolated, sched):
     t = FakeTransport()
     c = client_with(isolated, t)
@@ -202,6 +214,8 @@ def test_dry_run_makes_no_calls(isolated, sched):
     assert r["dry_run"] and r["est_total"] == 3
     r = F.pull_props(client=c, dry_run=True, sched=sched)
     assert r["dry_run"] and r["est_total"] == 9 * r["n_games"]
+    r = F.pull_props(client=c, dry_run=True, sched=sched, alternates=True)
+    assert r["dry_run"] and r["alternates"] and r["est_total"] == 17 * r["n_games"]
     r = F.pull_lines(client=c, dry_run=True, bookmaker="fanatics")
     assert r["calls"][0]["bookmakers"] == "fanatics" and r["est_total"] == 3
     assert t.calls == [] and not (isolated / "odds" / "ledger.jsonl").exists()

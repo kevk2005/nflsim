@@ -1,7 +1,7 @@
 # nfl-sim
 
 A Monte Carlo simulator for NFL games, built from pregame information. See `../SPEC.md` for the full plan.
-**Status: Milestones 1 (data, team model, drive-level simulator) and 2 (players, markets, parlays, odds) are done, plus a market-anchored simulation mode and a cleanup round (template-leakage check, QB early exits, close-game endings).** Milestone 2.6 (live odds feed that builds our own line history) is done. Milestone 2.7 (correlation fix) is done: a per-game passing shock was tested and built behind `--pass-shock`, but it failed the keep test, so it is **off** by default. Milestone 3 (full backtest with prop calibration, Streamlit app) is not started.
+**Status: Milestones 1 (data, team model, drive-level simulator) and 2 (players, markets, parlays, odds) are done, plus a market-anchored simulation mode and a cleanup round (template-leakage check, QB early exits, close-game endings).** Milestone 2.6 (live odds feed that builds our own line history) is done. Milestone 2.7 (correlation fix) is done: a per-game passing shock was tested and built behind `--pass-shock`, but it failed the keep test, so it is **off** by default. Milestone 3 (prop/SGP backtest, real-line ROI, Streamlit market browser and parlay builder) is done.
 
 ## Install
 ```bash
@@ -39,6 +39,15 @@ python3 -m venv .venv            # Python 3.11+ (built and tested on 3.13)
 .venv/bin/python -m nflsim.backtest --players --player-seasons 2018 2019 2020 2021 2022 2023 --sims 1000 --tag _1823
 .venv/bin/python scripts/pass_shock_sim.py [_1823]  # M2.7 step 1B: sim vs actual team passing variance + counterfactual
 .venv/bin/python scripts/tune_window.py <tag> 4000 0.4   # 2018-2020 game walk-forward with the passing shock
+```
+**Milestone 3:**
+```bash
+.venv/bin/python -m nflsim.backtest --props --mode independent --qb-exits on    # ~5 min (2024 → 2026 wk 7, 2,000 sims)
+.venv/bin/python -m nflsim.backtest --props --mode market_anchored --qb-exits off   # ~10 min; run all 4 combos
+.venv/bin/python -m nflsim.backtest --props --reuse [--mode ...] [--qb-exits ...]  # re-score saved predictions
+.venv/bin/python scripts/m3_report.py              # compare the 4 configs, keep the best (prop_wf_best.json)
+.venv/bin/streamlit run app/streamlit_app.py       # market browser + parlay builder + log + backtest page
+.venv/bin/python -m nflsim.odds_feed pull-props --alternates --dry-run   # cost plan for alternate lines (no call)
 ```
 `--pass-shock on|off` (default `off`; Milestone 2.7, not kept) switches the shared per-game passing shock in the parlay CLI and both backtests. `--pass-shock-sd X` (backtests) overrides its size (default 0.4). Outputs from `on` runs get a `_shock` suffix; `--tag` adds a suffix to `--players` output files. In Python: `simulate_game(..., pass_shock=0.4)`.
 `NFLSIM_COARSE_LATE=1` reproduces the old (pre-cleanup) late-game states for before/after comparisons.
@@ -417,6 +426,80 @@ QB spreads move toward actual and stay below it. **RB1, WR1 and TE1 spreads wide
 
 What the results point to (not built): about half the volume correlation is a persistent team pass tendency, which pregame data could predict (team-specific template weighting). A shock that kept run volume and drive clock unchanged would avoid the RB1 and total side effects. Either one needs its own keep test.
 
+## Milestone 3: backtest and app
+### Prop and synthetic-SGP walk-forward (`python -m nflsim.backtest --props`)
+- **Test window:** 2024 → 2026 week 7 (676 games). 2,000 simulations per game, weekly refits (team model on data before the week's first game, player usage on games before it), pass shock off. Earlier seasons are skipped because the share dispersion α was estimated on 2023.
+- **Props at self-set lines** (nflverse has no prop lines): per pregame role (QB1, RB1–2, WR1–3, TE1), each relevant market is graded at the model's own median rounded to x.5 and at a fixed grid (e.g. receiving yards 19.5/39.5/59.5/79.5/99.5). P(over) uses simulations where the player is active, since books void props on players who sit. Graded on official nflverse stats. Anytime TD counts any non-passing TD, as books do; the simulator credits no return TDs. 135,084 graded props; 8.3% were void (player did not play).
+- **Synthetic SGPs:** 11 templates per team (QB+WR1, QB+WR1+WR2, RB1+ML, QB attempts+ML, ...), with median and fixed lines. Joint P = K/N over simulations where every leg's player is active and no leg pushes. The independence benchmark is the product of the leg rates in the same simulations. 25,626 parlays. They share players and games, so they are **not independent observations; the check is noisy**.
+- **Configurations:** independent / market_anchored × QB exits on / off. The keep rule was fixed in advance: lowest mean of the props log loss and the SGP K/N log loss.
+
+| Config | Props Brier | Props log loss | SGP Brier (K/N) | SGP log loss (K/N) | SGP log loss (independence) | SGP mean pred / actual |
+|---|---|---|---|---|---|---|
+| independent, exits on | 0.1650 | 0.4913 | 0.1750 | 0.5302 | 0.5443 | 0.223 / 0.239 |
+| independent, exits off | 0.1651 | 0.4915 | 0.1726 | 0.5245 | 0.5367 | 0.228 / 0.234 |
+| anchored, exits on | 0.1647 | 0.4903 | 0.1755 | 0.5304 | 0.5466 | 0.218 / 0.243 |
+| **anchored, exits off (kept)** | **0.1647** | **0.4903** | **0.1729** | **0.5245** | 0.5388 | 0.223 / 0.237 |
+
+**Kept: market_anchored, QB exits off** (score 0.5074 vs 0.5080 for the runner-up; the margin is tiny). It's the app's default. All four configs are nearly identical on props. Exits off wins on SGPs because the QB–receiver correlations are higher without exits (see "Cleanup round"). But it overstates QB volume: in the kept config, QB attempts over the model's median hit 42.5% (predicted 47.1%), and completions 42.2% (predicted 46.1%). That's a trade-off, not a clear win.
+
+**Props, kept config.** Calibration over all 135,084 props (predicted → actual): 0.037 → 0.040, 0.150 → 0.155, 0.248 → 0.253, 0.351 → 0.351, 0.468 → 0.456, 0.550 → 0.539, 0.650 → 0.641, 0.750 → 0.747, 0.848 → 0.851, 0.948 → 0.942. Brier by season: 2024 0.1659, 2025 0.1633, 2026 0.1651. By market at fixed lines (Brier, with the in-sample base rate of the same role/market/line as a yardstick, not a forecast): receiving yards 0.1348 (0.1430), receptions 0.1435 (0.1571), rushing yards 0.1270 (0.1373), rush attempts 0.1307 (0.1419), passing yards 0.2005 (0.2094), passing TDs 0.1806 (0.1890), pass attempts 0.2029 (0.2006), completions 0.2143 (0.2132). Anytime TD: predicted 0.275, actual 0.278, Brier 0.1876 (0.1918). QB attempts and completions are the weak spots, running high. At the model's own median lines every market lands near Brier 0.25 by construction, so they only check that the median is unbiased.
+
+**Synthetic SGPs, kept config:**
+
+| Template (median lines) | n | K/N mean | Independence mean | Actual (95% CI ≈ ±0.026) | Brier K/N / indep. |
+|---|---|---|---|---|---|
+| QB + WR1 | 1,213 | 0.319 | 0.246 | 0.338 | 0.2238 / 0.2323 |
+| QB + WR2 | 1,175 | 0.306 | 0.245 | 0.312 | 0.2148 / 0.2193 |
+| QB + TE1 | 1,200 | 0.295 | 0.244 | 0.309 | 0.2138 / 0.2179 |
+| QB + WR1 + WR2 | 1,120 | 0.177 | 0.117 | 0.207 | 0.1654 / 0.1726 |
+| WR1 + WR2 | 1,184 | 0.227 | 0.235 | 0.274 | 0.2013 / 0.2004 |
+| QB + game total over | 1,266 | 0.307 | 0.240 | 0.314 | 0.2147 / 0.2205 |
+| RB1 rush yds + team ML | 1,286 | 0.290 | 0.247 | 0.306 | 0.2043 / 0.2074 |
+| QB attempts + team ML | 1,268 | 0.202 | 0.239 | 0.175 | 0.1404 / 0.1440 |
+| RB1 + QB yards | 1,217 | 0.239 | 0.246 | 0.218 | 0.1712 / 0.1711 |
+| ML + total over | 1,342 | 0.241 | 0.241 | 0.263 | 0.1835 / 0.1834 |
+| QB 2+ TD + WR1 anytime TD | 1,213 | 0.168 | 0.103 | 0.188 | 0.1505 / 0.1574 |
+
+- **K/N beats the independence benchmark** overall (log loss 0.5245 vs 0.5388) and on every template where the legs are correlated. It gets the *direction* right too: positive for QB+receiver, negative for QB attempts + ML.
+- **But K/N still runs low:** mean 0.223 vs actual 0.237. In the calibration buckets the actual rate is 1–3 points above predicted, and 3 points for the 3-leg QB+WR1+WR2 (fixed lines: 0.100 vs 0.130).
+- **Teammate receivers:** WR1+WR2 is the clearest miss (0.227 vs 0.274), from the too-negative teammate correlation.
+- **Over-predicted:** QB attempts + ML is too high (0.202 vs 0.175), because attempts ~ margin is too weak with exits off.
+- **Consistent with the known correlation gap:** QB + own-receiver SGPs are underpriced by the model. The app warns on them.
+
+### Real saved prices: ROI and model vs market (2026 weeks 1–7, 106 games)
+- **Data:** every saved pre-kickoff price (the 2026 backfill: one snapshot per game per book, 10 books), priced with the walk-forward model and settled on official stats. 102,929 priced rows. No live pulls of completed games yet.
+- **Model vs market:** on the over side of two-sided markets (39,078 decided book-lines), Brier is **0.2597 model vs 0.2469 market** (de-vigged), and log loss 0.7232 vs 0.6870. The market is better in every prop market; passing TDs are closest (0.2366 vs 0.2347).
+- **The model is overconfident on book lines.** Its probabilities spread far wider than the market's (sd 0.134 vs 0.057 on the over side). Where it says ≤ 0.2, the over hits 43%; where it says 0.6–0.7, 57%. It also prices overs too low (0.452 vs 0.479 actual).
+- **No added information:** on 4,536 main lines (one per player-market), a logistic regression of the result on the market's and the model's log-odds gives the model a coefficient of 0.06 (SE 0.06, clustered by game). With the market known, the model adds no detectable information. On its own self-set lines it is well calibrated: there, the location errors average out across players, but a book line already encodes each player's median better than the model does.
+- **ROI**, flat 1 unit, fixed rule: bet whenever model EV ≥ 0 (or ≥ 5%) at the best price across the 10 books, or at fanatics only. 95% CI by bootstrap over games:
+
+| Config | Rule | Bets | ROI | 95% CI |
+|---|---|---|---|---|
+| anchored, exits off (kept) | best price, EV ≥ 0 | 13,103 | −2.6% | −6.6% to +1.8% |
+| anchored, exits off (kept) | best price, EV ≥ 5% | 10,839 | −1.4% | −6.2% to +3.3% |
+| anchored, exits off (kept) | fanatics, EV ≥ 0 | 1,469 | −1.0% | −13.4% to +11.5% |
+| independent, exits on | best price, EV ≥ 0 | 13,427 | −1.1% | −5.1% to +3.2% |
+
+The model claims a mean EV of about +24% on these bets; realized ROI is near zero or negative. The other configs and thresholds range from −2.6% to +5.6%, all with CIs spanning zero (`data/processed/m3_report.txt`). **This is not evidence of profit. It is evidence that the model's prop prices should not be trusted against the market.** Same-game-parlay ROI is not possible: there are no real SGP prices.
+
+### Game level (unchanged)
+The 2021 → 2026 week 7 game walk-forward is in "Validation" above (independent: Brier 0.2214 vs closing market 0.2131).
+
+### App (`streamlit run app/streamlit_app.py`)
+- **Market browser:** pick a game with saved snapshots and a book (default **fanatics**; falls back to the first book if fanatics has no snapshot). It shows that book's latest pre-kickoff snapshot, game lines first, then one expander per player. Prices are never from after kickoff. Snapshots older than 6 hours get a warning for upcoming games.
+- **Greyed out, never priced:** markets the simulator can't price (e.g. longest reception, if a snapshot has it), anytime-TD outcomes that aren't players (D/ST, No Scorer), and player names not matched to a roster. Hover shows the reason. Only markets present in saved snapshots appear.
+- **Alternate lines:** shown and priceable once pulled. None are saved yet. `pull-props --alternates` adds the 8 `_alternate` prop keys (docs, read 2026-10-26) to each game's call: ≤ 8 extra credits per game per pull, ≤ 120 for a 15-game slate. **Not pulled: needs approval.** Alternate spreads/totals aren't supported by the feed.
+- **Parlay builder:** click legs, enter the book's SGP price, choose simulations, mode, QB exits, settlement and bootstrap refits. A run shows:
+  - each leg's P(win), P(push), P(void), fair odds and offered price;
+  - joint K/N with its 95% Monte Carlo CI, the independence benchmark and fair odds;
+  - expected ROI at your SGP price, and pairwise leg correlations;
+  - Monte Carlo SE vs bootstrap model uncertainty, stated separately;
+  - the missing data and assumptions used.
+- **QB + own WR/TE warning:** any slip pairing a QB passing leg with a receiving leg on his own WR/TE shows a warning that these joint probabilities are likely understated.
+- **After the game:** a played game is graded on official stats in the builder. **My parlays** saves slips to `data/processed/parlay_log.jsonl` and grades finished games on request.
+- **Backtest page:** the config comparison, calibration charts by market and probability bucket, SGP K/N vs independence calibration, and the real-line results.
+- **No API calls:** the app reads saved files only.
+
 ## Odds feed (Milestone 2.6): The Odds API, live pulls + one approved 2026 backfill
 **Live pulls build our own history, plus one approved 2026 backfill.** Routine pulls are for **upcoming** games only. The single exception is a one-time, approved backfill of the 2026 season to date (see below). Outside that approved run the client refuses every `/historical/` endpoint. **Every live pull is saved permanently with its UTC pull time** (raw JSON plus normalized rows, never overwritten), so each pull adds to a line history we build ourselves going forward. That history is what Milestone 3 will use for prop ROI (see SPEC.md).
 
@@ -545,6 +628,8 @@ Per the spec, keep each change only if the walk-forward shows it helps. Report Q
 Any change here follows the usual rule: tune on 2018–2020 only, and keep it only if margin = 3, one-score share, OT and ties move toward actual without measurably worse Brier, log loss or total error.
 
 ## Known limitations
+- **Prop prices vs the market:** on real book lines (2026 weeks 1–7) the model is worse than the de-vigged market in every prop market, overconfident (probabilities spread about twice as wide as the market's), and adds no detectable information once the market line is known. Its "EV" against book prices is not a betting signal (Milestone 3).
+- **Synthetic SGPs:** K/N beats the independence product but still runs 1–3 points low on average. Biggest misses: teammate receivers (WR1+WR2 0.227 vs 0.274 actual) and 3-leg QB stacks; QB attempts + team ML is too high.
 - **QB + own WR/TE same-game parlays are likely underpriced.** Out of sample (2024–25), QB–receiver correlations run about 0.04–0.07 below actual (QB pass yds ~ WR1 0.405 vs 0.448, ~WR2 0.339 vs 0.409, ~TE1 0.277 vs 0.361). So the model's joint probability for "QB over + his receiver over" legs is likely too low. The Milestone 2.7 shock that narrows this gap failed its keep test and is off (see "Milestone 2.7").
 - Totals run about 0.8 points high (independent mode). The model lags shifts in league scoring.
 - Close games still reach the final two minutes too rarely, so 3-point finals (13.1% vs 15.6%) and one-score games (45.5% vs 49.8%) are low. Ties are about double actual (0.65% vs 0.33%).
