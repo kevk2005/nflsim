@@ -1,7 +1,7 @@
 # nfl-sim
 
 A Monte Carlo simulator for NFL games, built from pregame information. See `../SPEC.md` for the full plan.
-**Status: Milestones 1 (data, team model, drive-level simulator) and 2 (players, markets, parlays, odds) are done, plus a market-anchored simulation mode and a cleanup round (template-leakage check, QB early exits, close-game endings).** Milestone 2.6 (live odds feed that builds our own line history) is built; the first live pull needs an API key. Milestone 3 (full backtest with prop calibration, Streamlit app) is not started.
+**Status: Milestones 1 (data, team model, drive-level simulator) and 2 (players, markets, parlays, odds) are done, plus a market-anchored simulation mode and a cleanup round (template-leakage check, QB early exits, close-game endings).** Milestone 2.6 (live odds feed that builds our own line history) is done. Milestone 2.7 (correlation fix) is done: a per-game passing shock was tested and built behind `--pass-shock`, but it failed the keep test, so it is **off** by default. Milestone 3 (full backtest with prop calibration, Streamlit app) is not started.
 
 ## Install
 ```bash
@@ -35,7 +35,12 @@ python3 -m venv .venv            # Python 3.11+ (built and tested on 3.13)
 .venv/bin/python scripts/close_games.py 200        # close-game diagnosis, actual vs simulated (2018-2020)
 .venv/bin/python scripts/tune_window.py <tag>      # 2018-2020 walk-forward (tuning window only)
 .venv/bin/python scripts/cleanup_report.py before_qbexit exitfinal_coarse .   # before/after tables
+.venv/bin/python scripts/pass_shock_test.py        # M2.7 step 1A: within-game drive passing correlation (2018-2023, real data)
+.venv/bin/python -m nflsim.backtest --players --player-seasons 2018 2019 2020 2021 2022 2023 --sims 1000 --tag _1823
+.venv/bin/python scripts/pass_shock_sim.py [_1823]  # M2.7 step 1B: sim vs actual team passing variance + counterfactual
+.venv/bin/python scripts/tune_window.py <tag> 4000 0.4   # 2018-2020 game walk-forward with the passing shock
 ```
+`--pass-shock on|off` (default `off`; Milestone 2.7, not kept) switches the shared per-game passing shock in the parlay CLI and both backtests. `--pass-shock-sd X` (backtests) overrides its size (default 0.4). Outputs from `on` runs get a `_shock` suffix; `--tag` adds a suffix to `--players` output files. In Python: `simulate_game(..., pass_shock=0.4)`.
 `NFLSIM_COARSE_LATE=1` reproduces the old (pre-cleanup) late-game states for before/after comparisons.
 `--qb-exits on|off` (default `on`) switches simulated starting-QB early exits in the parlay CLI and in both backtests (game and `--players`), in either mode. Outputs from `off` runs get a `_noexits` suffix. In Python: `simulate_game(..., qb_exits=False)`. Milestone 3 will compare prop/parlay calibration both ways.
 `python scripts/exit_corr_split.py` splits QB correlations by exit vs no-exit games (needs the independent `--players` run).
@@ -346,6 +351,72 @@ Game-level effect (2021+, independent): Brier 0.2208 → 0.2214, log loss 0.6319
 
 What improved: OT is now close to actual (6.0% vs 6.3%), 3-point finals moved partway (13.1% vs 15.6%), and total MAE improved. What did **not** improve: one-score share barely moved (45.5% vs 49.8%), and ties are now about double actual (0.65% vs 0.33%). The remaining shortfall: too few close games reach the final 2:00. The sim has 61 "down 1–3, ≤ 2:00" drives per 803 games vs 102 actual, and 34 tied ones vs 73. That's a clock/possession-count issue, not drive-outcome choice.
 
+## Milestone 2.7: correlation fix (per-game passing shock): tested, built, **not kept**
+Starting point: QB–receiver correlations were 0.04–0.07 below actual in all games, with or without a QB exit (see "Cleanup round"). Hypothesis (SPEC): real games have a shared per-game passing shock that the simulator lacks.
+
+### Step 1: hypothesis test, 2018–2023 only
+**A. Real data only** (`scripts/pass_shock_test.py`; 26,805 regular-season drives). The simulator picks each drive's template independently given (outcome, game state, field-position bucket), so within a simulated team-game the drive-level passing residuals are uncorrelated by construction. In real games, the residual correlation between two drives of the same team-game (relative to that cell and season), with bootstrap 95% CIs:
+
+| Per drive | Same team-game | Same offense-season, other game | Same defense-season, other game | Game-specific part |
+|---|---|---|---|---|
+| Dropbacks | 0.042 (0.034–0.049) | 0.018 (0.013–0.024) | 0.003 (0.001–0.006) | 0.020 |
+| Passing yards | 0.032 (0.024–0.039) | 0.012 (0.008–0.017) | 0.002 (0.000–0.005) | 0.017 |
+| Yards per dropback | 0.001 (−0.005–0.008) | 0.001 | 0.000 | 0.000 |
+
+With about 8.5 such drives per team-game, a 0.042 correlation inflates team-game dropback variance by about 1.31× (1.15× for the game-specific part alone). **Passing efficiency shows no shared game effect once the drive outcome is known. Pass volume does.** About half of that is a persistent team pass tendency (pass-heavy offenses), which the league-wide templates also lack. The other half is game-specific.
+
+**B. Simulator vs actual** (`scripts/pass_shock_sim.py`; a 2018–2023 player walk-forward with the current model, 1,000 sims/game, 3,314 team-games). Realized variance (mean squared error of actual vs the simulated mean, net of Monte Carlo noise) ÷ the simulator's within-game variance. 1.0 means the simulated spread is right:
+
+| Team-game stat | Ratio | 95% CI |
+|---|---|---|
+| Pass rate (attempts / (attempts + designed runs)) | 1.79 | 1.71–1.89 |
+| Pass attempts | 1.40 | 1.33–1.48 |
+| Passing yards | 1.23 | 1.17–1.29 |
+| Drives | 1.21 | 1.14–1.28 |
+| Yards per attempt | 1.08 | 1.03–1.15 |
+
+The QB–receiver gap is also present in 2018–23: QB yds ~ WR1 0.409 vs 0.455 actual, ~WR2 0.344 vs 0.388, ~TE1 0.277 vs 0.314, WR1 ~ WR2 −0.032 vs +0.013. Counterfactual (post hoc, no model change): one shared multiplicative shock per team-simulation on all passing stats, sized to the measured attempt excess (sd 0.13 on the log scale), shrinks those gaps to −0.011 / −0.011 / −0.006 / −0.014. **Supported:** the missing game-to-game variation is mostly pass volume/pass rate, and its size explains most of the gap.
+
+### Step 2: build (`--pass-shock on|off`)
+Each team gets z ~ N(0, 1) per simulation (from its own random stream). Every drive's template is still a real historical drive with the simulated outcome, state and field-position bucket. But within that cell, drives are ordered by pass share and the template uniform is moved to Φ(Φ⁻¹(u) + 0.4·z). In a "hot" simulation, all of a team's drives lean toward pass-heavy real drives. Drive outcomes are untouched, and rule-3 consistency holds by construction (tests rerun with the shock on). With the switch off, the simulation is bit-identical to before.
+
+**Size estimated on 2018–2023**, with the rule fixed in advance: team pass-attempt variance ratio ≈ 1. Shock sd 0.3 → ratio 1.16; **0.4 → 1.03** (CI 0.98–1.08; pass rate 1.05, passing yards 1.01). Chosen: 0.4.
+
+### Step 3: keep test: **failed, left off**
+| Correlation | Actual 18–23 | Off | On | Actual 24–25 (out of sample) | Off | On |
+|---|---|---|---|---|---|---|
+| QB pass yds ~ WR1 rec yds | 0.455 | 0.409 | 0.440 | 0.448 | 0.405 | 0.438 |
+| QB pass yds ~ WR2 rec yds | 0.388 | 0.344 | 0.374 | 0.409 | 0.339 | 0.375 |
+| QB pass yds ~ TE1 rec yds | 0.314 | 0.277 | 0.301 | 0.361 | 0.277 | 0.299 |
+| WR1 ~ WR2 rec yds | 0.013 | −0.032 | −0.000 | 0.022 | −0.040 | −0.012 |
+| QB pass TDs ~ WR1 rec TDs | 0.434 | 0.433 | 0.442 | 0.455 | 0.434 | 0.442 |
+| QB pass yds ~ game total | 0.410 | 0.392 | 0.394 | 0.434 | 0.385 | 0.384 |
+| RB1 rush att ~ team margin | 0.276 | 0.250 | 0.231 | 0.284 | 0.280 | 0.254 |
+| QB pass att ~ team margin | −0.156 | −0.100 | −0.086 | −0.173 | −0.120 | −0.110 |
+| RB1 rush yds ~ QB pass yds | −0.084 | −0.017 | −0.128 | −0.085 | −0.011 | −0.129 |
+
+(n = 2,872–3,112 team-games in 2018–23, 982–1,087 in 2024–25.) QB–receiver and WR1–WR2 correlations **move clearly toward actual**, in sample and out of sample. QB ~ game total does not move. RB1 ~ margin gets worse, and RB1 rush yds ~ QB pass yds overshoots.
+
+**Player spreads (sd), actual / off / on:**
+
+| | 2018–23 | 2024–25 |
+|---|---|---|
+| QB1 pass attempts | 9.67 / 8.19 / 9.20 | 9.05 / 7.97 / 8.93 |
+| QB1 passing yards | 83.9 / 74.0 / 79.9 | 77.8 / 70.0 / 75.3 |
+| RB1 rush attempts | 6.23 / 6.24 / **6.68** | 6.05 / 6.19 / **6.70** |
+| RB1 rushing yards | 38.4 / 36.8 / **39.6** | 39.5 / 36.7 / **39.8** |
+| WR1 targets | 3.56 / 3.74 / **3.88** | 3.43 / 3.57 / **3.70** |
+| WR1 receiving yards | 41.2 / 41.5 / **42.5** | 39.6 / 39.4 / **40.4** |
+| TE1 receiving yards | 30.5 / 30.9 / **31.4** | 29.3 / 30.0 / **30.4** |
+
+QB spreads move toward actual and stay below it. **RB1, WR1 and TE1 spreads widen beyond actual** (bold). They already matched actual with the shock off, so a shock of any size pushes them past it.
+
+**Game metrics** (same seeds, paired): 2021 → 2026 wk 7 (1,530 games): Brier 0.2214 → 0.2214 (paired change 0.0000, 95% CI −0.0004 to +0.0004), log loss 0.6332 → 0.6331, margin MAE 10.076 → 10.078, **total MAE 10.678 → 10.731 (+0.053, CI +0.030 to +0.076)**, total bias −0.84 → −1.27. Pass-heavy templates use less clock, so drives per game rise from 21.07 to 21.26 and simulated totals rise by 0.4. On 2018–20 (803 games): Brier 0.2156 → 0.2155, total MAE 10.902 → 10.905, total bias +1.04 → +0.57.
+
+**Decision (SPEC rule):** keep only if correlations move toward actual *without* widening player distributions beyond actual and *without* hurting game metrics. The first condition holds; the other two fail. **The shock is off by default.** The code stays behind `--pass-shock` (size 0.4) so it can be compared later. Consequence: SGP joint probabilities for a QB with his receivers remain somewhat understated (QB–WR gaps of about −0.04 to −0.07 out of sample).
+
+What the results point to (not built): about half the volume correlation is a persistent team pass tendency, which pregame data could predict (team-specific template weighting). A shock that kept run volume and drive clock unchanged would avoid the RB1 and total side effects. Either one needs its own keep test.
+
 ## Odds feed (Milestone 2.6): The Odds API, live pulls + one approved 2026 backfill
 **Live pulls build our own history, plus one approved 2026 backfill.** Routine pulls are for **upcoming** games only. The single exception is a one-time, approved backfill of the 2026 season to date (see below). Outside that approved run the client refuses every `/historical/` endpoint. **Every live pull is saved permanently with its UTC pull time** (raw JSON plus normalized rows, never overwritten), so each pull adds to a line history we build ourselves going forward. That history is what Milestone 3 will use for prop ROI (see SPEC.md).
 
@@ -480,6 +551,6 @@ Any change here follows the usual rule: tune on 2018–2020 only, and keep it on
 - Drive duration is resampled from empirical drives with the same outcome and state, not from team-specific pace.
 - Defensive and special-teams TDs come only from the drive-outcome classes. There's no separate return model.
 - Play templates are league-wide, not team-specific: a team's completion rate, sack rate and scramble rate follow the league mix for its drive outcomes. QB accuracy shows up only through drive outcomes, so QB completion props are less personalized than yardage/usage props.
-- QB early exits are simulated (switchable with `--qb-exits`), but QB-to-receiver and QB-to-total correlations are 0.04–0.07 below actual even in games without an exit (cause not investigated). Temporary QB absences (starter returns) and mid-drive exits are not modeled. The simulated exit rate (12.1%) is below the 2021–25 actual (16.3%), because it was estimated on 2018–20.
+- QB early exits are simulated (switchable with `--qb-exits`), but QB-to-receiver and QB-to-total correlations are 0.04–0.07 below actual even in games without an exit. Milestone 2.7 traced the receiver gap to missing game-to-game variation in pass volume/pass rate (not efficiency). A per-game passing shock closes most of it but widens RB/WR/TE spreads beyond actual and worsens total error, so it is off (see "Milestone 2.7"). Temporary QB absences (starter returns) and mid-drive exits are not modeled. The simulated exit rate (12.1%) is below the 2021–25 actual (16.3%), because it was estimated on 2018–20.
 - Player-layer settings (half-life 6, shrinkage strengths, P(active) window) were set by hand, not tuned. Only the share dispersion α was estimated (on 2023).
 - Bootstrap model uncertainty does not refit the team EPA ratings or the empirical pace/field-position tables.

@@ -48,13 +48,15 @@ def load_inputs():
     return games, gf, drives, pat
 
 
-def _suffix(mode: str, qb_exits: bool = True) -> str:
-    return ("" if mode == "independent" else "_anchored") + ("" if qb_exits else "_noexits")
+def _suffix(mode: str, qb_exits: bool = True, pass_shock: float = 0.0) -> str:
+    return (("" if mode == "independent" else "_anchored") + ("" if qb_exits else "_noexits")
+            + ("_shock" if pass_shock else ""))
 
 
 def walk_forward(start_season: int = 2021, n_sims: int = 4000, seed: int = 0,
                  verbose: bool = True, end_season: int | None = None, save: bool = True,
-                 mode: str = "independent", qb_exits: bool = True, **fit_kwargs):
+                 mode: str = "independent", qb_exits: bool = True, pass_shock: float = 0.0,
+                 **fit_kwargs):
     games, gf, drives, pat = load_inputs()
     test = games[(games["season"] >= start_season) & games["label_home_score"].notna()]
     if end_season is not None:
@@ -74,7 +76,7 @@ def walk_forward(start_season: int = 2021, n_sims: int = 4000, seed: int = 0,
         base_total = float((hist["label_home_score"] + hist["label_away_score"]).mean())
         for g in wk.itertuples():
             row = gf[gf["game_id"] == g.game_id].iloc[0]
-            mu = replace(matchup_from_features(row), qb_exits=qb_exits)
+            mu = replace(matchup_from_features(row), qb_exits=qb_exits, pass_shock=pass_shock)
             sseed = int(rng.integers(1 << 31))
             anc = {}
             if mode == "market_anchored":
@@ -128,8 +130,8 @@ def walk_forward(start_season: int = 2021, n_sims: int = 4000, seed: int = 0,
     pr["mkt_wp"] = market_wp(gidx.loc[pr["game_id"]]).to_numpy()
     sm = pd.concat(samples, ignore_index=True)
     if save:
-        pr.to_parquet(PROCESSED / f"wf_predictions{_suffix(mode, qb_exits)}.parquet", index=False)
-        sm.to_parquet(PROCESSED / f"wf_sim_samples{_suffix(mode, qb_exits)}.parquet", index=False)
+        pr.to_parquet(PROCESSED / f"wf_predictions{_suffix(mode, qb_exits, pass_shock)}.parquet", index=False)
+        sm.to_parquet(PROCESSED / f"wf_sim_samples{_suffix(mode, qb_exits, pass_shock)}.parquet", index=False)
     return pr, sm
 
 
@@ -287,9 +289,15 @@ def main(argv=None):
     ap.add_argument("--mode", default="independent", choices=["independent", "market_anchored"])
     ap.add_argument("--qb-exits", default="on", choices=["on", "off"],
                     help="simulate starting-QB early exits (default on)")
+    ap.add_argument("--pass-shock", default="off", choices=["on", "off"],
+                    help="shared per-game passing shock (Milestone 2.7; default off)")
+    ap.add_argument("--pass-shock-sd", type=float, help="shock size when on (default PASS_SHOCK_SD)")
+    ap.add_argument("--tag", default="", help="suffix for --players output files")
     a = ap.parse_args(argv)
     qx = a.qb_exits == "on"
-    sx = _suffix(a.mode, qx)
+    from .simulator import PASS_SHOCK_SD
+    shk = (a.pass_shock_sd if a.pass_shock_sd is not None else PASS_SHOCK_SD) if a.pass_shock == "on" else 0.0
+    sx = _suffix(a.mode, qx, shk) + a.tag
     if a.players:
         if a.reuse:
             pr = pd.read_parquet(PROCESSED / f"player_wf{sx}.parquet")
@@ -297,7 +305,7 @@ def main(argv=None):
             gc = pd.read_pickle(PROCESSED / f"player_wf_gamecorr{sx}.pkl")
         else:
             pr, sm, gc = player_walk_forward(tuple(a.player_seasons), a.sims if a.sims != 4000 else 1000,
-                                             mode=a.mode, qb_exits=qx)
+                                             mode=a.mode, qb_exits=qx, tag=a.tag, pass_shock=shk)
         pd.set_option("display.width", 250)
         dist = player_distribution_report(pr, sm)
         corr = correlation_report(gc)
@@ -312,8 +320,8 @@ def main(argv=None):
         pr = pd.read_parquet(PROCESSED / f"wf_predictions{sx}.parquet")
         sm = pd.read_parquet(PROCESSED / f"wf_sim_samples{sx}.parquet")
     else:
-        pr, sm = walk_forward(a.start, a.sims, mode=a.mode, qb_exits=qx)
-    res = {"mode": a.mode, "qb_exits": a.qb_exits, "evaluation": evaluate(pr),
+        pr, sm = walk_forward(a.start, a.sims, mode=a.mode, qb_exits=qx, pass_shock=shk)
+    res = {"mode": a.mode, "qb_exits": a.qb_exits, "pass_shock_sd": shk, "evaluation": evaluate(pr),
            "league_validation": league_validation(pr, sm, read_processed("drives"))}
     if a.mode == "market_anchored":
         res["NOTE"] = ("Anchored to the closing market: win-probability and score metrics here only "
@@ -347,7 +355,8 @@ def _roles_from_model(tp) -> dict:
 
 
 def player_walk_forward(seasons=(2024, 2025), n_sims: int = 1000, keep: int = 100, seed: int = 0,
-                        verbose: bool = True, mode: str = "independent", qb_exits: bool = True):
+                        verbose: bool = True, mode: str = "independent", qb_exits: bool = True,
+                        tag: str = "", pass_shock: float = 0.0):
     from .ingest import load
     from .pipeline import load_context, simulate_game
     ctx = load_context()
@@ -363,7 +372,8 @@ def player_walk_forward(seasons=(2024, 2025), n_sims: int = 1000, keep: int = 10
         tm = fit_team_model(cutoff, ctx.drives, ctx.pat, ctx.gf)
         for g in wk.itertuples():
             sg = simulate_game(ctx, g.game_id, n_sims, seed=int(rng.integers(1 << 31)),
-                               cutoff=cutoff, team_model=tm, mode=mode, qb_exits=qb_exits)
+                               cutoff=cutoff, team_model=tm, mode=mode, qb_exits=qb_exits,
+                               pass_shock=pass_shock)
             margin = sg.sim.home_score - sg.sim.away_score
             act_margin = g.label_home_score - g.label_away_score
             for side, tp in sg.players.teams.items():
@@ -377,7 +387,14 @@ def player_walk_forward(seasons=(2024, 2025), n_sims: int = 1000, keep: int = 10
                        # did the starting QB leave early in each kept simulation?
                        "sim_qb_exit": (np.bincount(sg.sim.drives["sim"][(sg.sim.drives["side"] == side)
                                                                         & sg.sim.drives["qb_out"]],
-                                                   minlength=n_sims) > 0)[:keep]}
+                                                   minlength=n_sims) > 0)[:keep],
+                       # team passing totals (all QBs), for game-level variance checks
+                       "team_pass_att": st["pass_att"].sum(1)[:keep],
+                       "team_pass_yards": sg.players.team_plays[side]["pass_yards"][:keep],
+                       "team_targets": sg.players.team_plays[side]["targets"][:keep],
+                       "team_designed_runs": sg.players.team_plays[side]["designed_runs"][:keep],
+                       "team_drives": np.bincount(sg.sim.drives["sim"][sg.sim.drives["side"] == side],
+                                                  minlength=n_sims)[:keep]}
                 for k, role in roles.items():
                     pid = tp.ids[k]
                     played = (g.game_id, pid) in pg.index
@@ -404,7 +421,7 @@ def player_walk_forward(seasons=(2024, 2025), n_sims: int = 1000, keep: int = 10
             print(f"{season} wk{week:>2}: {len(wk)} games, {time.time() - t0:.0f}s", flush=True)
     pr = pd.DataFrame(rows)
     sm = pd.concat(samples, ignore_index=True)
-    sx = _suffix(mode, qb_exits)
+    sx = _suffix(mode, qb_exits, pass_shock) + tag
     pr.to_parquet(PROCESSED / f"player_wf{sx}.parquet", index=False)
     sm.to_parquet(PROCESSED / f"player_wf_samples{sx}.parquet", index=False)
     pd.to_pickle(gamecorr, PROCESSED / f"player_wf_gamecorr{sx}.pkl")

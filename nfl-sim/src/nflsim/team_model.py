@@ -233,10 +233,16 @@ class PaceTable:
     Cells are (outcome, game state, start field-position bucket), falling back
     to (outcome, state), then (outcome, coarse late state), then (outcome) when a
     cell has < MIN_CELL drives.
+
+    `sorted_cells` holds the same rows ordered by pass share (pass plays / pass+run
+    plays). With a per-row `tilt` (the per-game passing shock, Milestone 2.7) the
+    uniform is moved to Phi(Phi^-1(u) + tilt) and looked up in the sorted cell, so a
+    positive tilt picks more pass-heavy real drives with the same outcome.
     """
     arr: np.ndarray      # [k, 4] plays, secs, n_pr, n_pass
     uid: np.ndarray      # [k] drive_uid
     cells: dict          # (outcome_idx, state_idx, bucket) -> row indices into arr
+    sorted_cells: dict = None   # same keys, rows sorted by pass share
 
     @classmethod
     def fit(cls, drives: pd.DataFrame) -> "PaceTable":
@@ -258,18 +264,32 @@ class PaceTable:
                 for bb in range(5):
                     m = np.flatnonzero((oi == o) & (st == s) & (b == bb))
                     cells[(o, s, bb)] = m if len(m) >= MIN_CELL else fallback
-        return cls(arr, uid, cells)
+        share = arr[:, 3] / np.maximum(arr[:, 2], 1)
+        tie = np.random.default_rng(0).random(len(arr))   # fixed tie-break order
+        srt = {}
+        sorted_cells = {}
+        for k, m in cells.items():
+            if id(m) not in srt:   # fallback cells are shared arrays: sort once
+                srt[id(m)] = m[np.lexsort((tie[m], share[m]))]
+            sorted_cells[k] = srt[id(m)]
+        return cls(arr, uid, cells, sorted_cells)
 
     def sample(self, rng, outcome: np.ndarray, state: np.ndarray, start_yl: np.ndarray,
-               u: np.ndarray | None = None):
+               u: np.ndarray | None = None, tilt: np.ndarray | None = None):
         """Returns ([n, 4] plays/secs/n_pr/n_pass, [n] drive_uid).
-        u: optional per-row uniforms (common random numbers); else drawn from rng."""
+        u: optional per-row uniforms (common random numbers); else drawn from rng.
+        tilt: optional per-row pass-share tilt (see class docstring); None = off."""
         u = rng.random(len(outcome)) if u is None else u
+        cells = self.cells
+        if tilt is not None:
+            from scipy.special import ndtr, ndtri
+            u = ndtr(ndtri(np.clip(u, 1e-12, 1 - 1e-12)) + tilt)
+            cells = self.sorted_cells
         idx = np.zeros(len(outcome), dtype=int)
         key = (outcome * 100 + state) * 10 + start_bucket(start_yl)
         for k in np.unique(key):
             m = key == k
-            cell = self.cells[(k // 1000, (k // 10) % 100, k % 10)]
+            cell = cells[(k // 1000, (k // 10) % 100, k % 10)]
             idx[m] = cell[np.minimum((u[m] * len(cell)).astype(int), len(cell) - 1)]
         return self.arr[idx], self.uid[idx]
 

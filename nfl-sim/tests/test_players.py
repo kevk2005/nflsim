@@ -17,10 +17,11 @@ def ctx():
     return load_context()
 
 
-@pytest.fixture(scope="module", params=["independent", "market_anchored"])
+@pytest.fixture(scope="module", params=["independent", "market_anchored", "independent_shock"])
 def sims(ctx, request):
     from nflsim.pipeline import simulate_game
-    out = [simulate_game(ctx, g, N, seed=i, mode=request.param) for i, g in enumerate(GAMES)]
+    mode, shock = (("independent", 0.4) if request.param == "independent_shock" else (request.param, 0.0))
+    out = [simulate_game(ctx, g, N, seed=i, mode=mode, pass_shock=shock) for i, g in enumerate(GAMES)]
     if request.param == "market_anchored":
         assert all(g.anchor["mode"] == "market_anchored" for g in out)
     return out
@@ -109,3 +110,25 @@ def test_qb_exits_happen_and_hurt_passing(sims):
             if b >= 0 and ex.any():
                 assert g.players.stats[side]["pass_att"][ex, b].sum() > 0
     assert 0.04 < np.mean(rates) < 0.25
+
+
+def test_pass_shock_tilts_templates(ctx):
+    """--pass-shock: sorted cells hold the same drives; the shock widens team pass
+    volume and is off by default (bit-identical to a run without it)."""
+    from nflsim.pipeline import simulate_game
+    g0 = simulate_game(ctx, GAMES[0], 2000, seed=5)
+    g0b = simulate_game(ctx, GAMES[0], 2000, seed=5, pass_shock=0.0)
+    g1 = simulate_game(ctx, GAMES[0], 2000, seed=5, pass_shock=0.4)
+    assert np.array_equal(g0.sim.home_score, g0b.sim.home_score)
+    assert np.array_equal(g0.players.stats[0]["pass_att"], g0b.players.stats[0]["pass_att"])
+    pace = g0.team_model.pace
+    share = pace.arr[:, 3] / np.maximum(pace.arr[:, 2], 1)
+    for k, cell in list(pace.cells.items())[::50]:
+        srt = pace.sorted_cells[k]
+        assert np.array_equal(np.sort(cell), np.sort(srt))
+        assert (np.diff(share[srt]) >= 0).all()
+    for side in (0, 1):
+        a0 = g0.players.stats[side]["pass_att"].sum(1)
+        a1 = g1.players.stats[side]["pass_att"].sum(1)
+        assert a1.var() > 1.2 * a0.var()
+        assert abs(a1.mean() - a0.mean()) < 1.5

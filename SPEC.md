@@ -133,7 +133,11 @@ Source: The Odds API (paid plan, 20,000 credits/month). Credits cost real money,
 - One real live snapshot is pulled and reported (games, books, props, player match rate, credits used).
 
 ## Milestone 2.7: Correlation fix
-**Status: NOT STARTED**
+**Status: DONE (shock built, not kept: off by default)**
+
+- Step 1 supported, with a refinement. On 2018–2023, the missing game-to-game variation is in pass volume/pass rate (realized ÷ simulated variance: pass rate 1.79, attempts 1.40, yards per attempt only 1.08). About half of the within-game volume correlation is a persistent team pass tendency, the rest game-specific.
+- Step 2: `--pass-shock on|off` (per-team, per-simulation pass-share tilt in template selection; size 0.4 estimated on 2018–2023).
+- Step 3: QB–receiver and WR1–WR2 correlations move clearly toward actual (2024–25: QB~WR1 0.405 → 0.438 vs 0.448 actual). But RB1/WR1/TE1 spreads widen beyond actual, and 2021+ total MAE worsens by +0.053 (CI +0.030 to +0.076). Left off; details in README.
 
 Hypothesis: real games have a shared per-game passing shock (one team's whole passing game runs hot or cold together), which the simulator lacks, so QB–receiver correlations come out 0.04–0.07 too low in all games.
 
@@ -173,6 +177,7 @@ Add one at a time, and keep each only if the walk-forward test shows it helps:
 ## Backlog (not scheduled)
 - **End-of-game clock, possessions and timeouts:** too few close games reach the last 2:00, the one-score share is low (45.5% vs 49.8%), ties are about double actual (0.65% vs 0.33%), and timeouts are not modeled.
 - **QB exit rate below actual:** simulated 12% of team-games vs 16–19% actual (the hazards were estimated on 2018–2020, when exits were rarer).
+- **Team pass tendency / clock-neutral pass shock (from Milestone 2.7):** about half the within-game pass-volume correlation is a persistent team pass tendency (pregame-predictable; templates are league-wide). A shock that leaves run volume and drive clock unchanged might avoid 2.7's side effects. Each needs its own keep test.
 - **Unmatched odds player names:** 14 names in the 2026 backfill (e.g. "Hollywood Brown", "Joshua Palmer"). Fixing them needs a reviewed alias list, not fuzzy matching.
 - **Milestone 4 QB items (from the README backlog):** split the offense rating into QB and non-QB parts; a data-driven prior for QBs with little history (the current −0.10 EPA prior is hand-set); tune the QB rating's prior strength and recency on 2018–2020; use Questionable/Doubtful status and practice participation for the probability that the listed starter plays.
 

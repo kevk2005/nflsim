@@ -60,7 +60,7 @@ def simulate_game(ctx: Context, game_id: str, n_sims: int = 10000, seed: int = 0
                   bootstrap_rng: np.random.Generator | None = None,
                   mode: str = "independent", home_spread: float | None = None,
                   total: float | None = None, qb_exits: bool = True,
-                  as_of: pd.Timestamp | None = None) -> SimulatedGame:
+                  as_of: pd.Timestamp | None = None, pass_shock: float = 0.0) -> SimulatedGame:
     """Simulate one game. Models are fit on data dated before `cutoff`
     (default: the game day). With `bootstrap_rng`, the drive model and every
     player's usage history are bootstrap-resampled (one model-uncertainty draw).
@@ -73,6 +73,10 @@ def simulate_game(ctx: Context, game_id: str, n_sims: int = 10000, seed: int = 0
 
     qb_exits=False turns off simulated starting-QB early exits (blowout pulls and
     injury/benching); the starter then plays every snap.
+
+    pass_shock: sd of the shared per-game passing shock (pass-share tilt of the
+    drive templates, one draw per team per simulation); 0 = off. The CLI switch
+    `--pass-shock on` uses simulator.PASS_SHOCK_SD.
 
     as_of: latest time an odds snapshot may come from (default: now). Snapshots
     from after kickoff are never used, whatever as_of is."""
@@ -96,7 +100,7 @@ def simulate_game(ctx: Context, game_id: str, n_sims: int = 10000, seed: int = 0
                                        ctx.roles, pri, cutoff, int(row["season"]),
                                        rng=bootstrap_rng, hist_by_player=ctx.hist_by_player,
                                        qb2_id=qb2 if isinstance(qb2, str) else None)
-    mu = replace(matchup_from_features(row), qb_exits=bool(qb_exits))
+    mu = replace(matchup_from_features(row), qb_exits=bool(qb_exits), pass_shock=float(pass_shock))
     info = {"mode": "independent"}
     if mode == "market_anchored":
         grow = ctx.games[ctx.games["game_id"] == game_id].iloc[0]
@@ -128,6 +132,8 @@ def simulate_game(ctx: Context, game_id: str, n_sims: int = 10000, seed: int = 0
         "Inactives: official game-day inactive lists are not used.",
         ("QB early exits: simulated (blowout pulls and injury/benching, rates from 2018-20)."
          if qb_exits else "QB early exits: OFF (the starter plays every snap)."),
+        (f"Per-game passing shock: ON (sd {pass_shock:g})." if pass_shock else
+         "Per-game passing shock: OFF."),
         "Schemes / coaching changes: not modeled.",
         ("Market lines: used as the anchor (mean margin and total), never as a model input."
          if info["mode"] == "market_anchored" else

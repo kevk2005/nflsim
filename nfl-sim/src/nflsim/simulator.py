@@ -40,6 +40,10 @@ class Matchup:
     home_static_backup: np.ndarray | None = None
     away_static_backup: np.ndarray | None = None
     qb_exits: bool = True
+    # Per-game passing shock (Milestone 2.7): each team gets z ~ N(0, 1) per
+    # simulation, and every drive's template is drawn with pass-share tilt
+    # pass_shock * z. 0 = off.
+    pass_shock: float = 0.0
 
 
 @dataclass
@@ -86,6 +90,13 @@ def matchup_from_features(gf_row: pd.Series) -> Matchup:
         season=int(gf_row["season"]), playoff=gf_row.get("game_type", "REG") != "REG",
         home_static_backup=backup.get("home"), away_static_backup=backup.get("away"),
     )
+
+
+# Size (sd of the pass-share tilt) used when the per-game passing shock is on
+# (--pass-shock on). Estimated on 2018-2023 (README, Milestone 2.7). The switch
+# defaults to off: the shock failed the keep test (wider player spreads than
+# actual, worse 2021+ total error).
+PASS_SHOCK_SD = 0.4
 
 
 # Starting-QB exit hazard per drive, by state at the start of the drive.
@@ -144,6 +155,10 @@ def simulate(tm: TeamModel, mu: Matchup, n_sims: int = 2000, seed: int | None = 
                           mu.away_static_backup if has_b[1] else mu.away_static])
     qb_out = np.zeros((n, 2), bool)   # starter has left the game (permanent)
     qb_blow = np.zeros((n, 2), bool)  # ...and it was a blowout pull (other starters sit too)
+    # Shared passing shock per (simulation, team), from its own stream so the
+    # main stream (and so the simulation with the shock off) is unchanged.
+    shock = (mu.pass_shock * np.random.default_rng(None if seed is None else [seed, 7])
+             .standard_normal((n, 2))) if mu.pass_shock else None
     log = []
     drv = []    # per-step (sims, offense side, outcome, start yl, template uid, half)
 
@@ -183,7 +198,8 @@ def simulate(tm: TeamModel, mu: Matchup, n_sims: int = 2000, seed: int | None = 
         u = U[a, 0]
         out = (P.cumsum(1) < u[:, None]).sum(1)
         out = np.minimum(out, len(OUTCOMES) - 1)
-        pace, tmpl = tm.pace.sample(rng, out, st, yl[a], U[a, 1])
+        pace, tmpl = tm.pace.sample(rng, out, st, yl[a], U[a, 1],
+                                    tilt=None if shock is None else shock[a, p])
         plays, secs, npr, npass = pace.T
         secs = np.where(out == EOH, half_secs[a], np.minimum(secs, half_secs[a]))
         start_yl = yl[a].copy()

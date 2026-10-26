@@ -192,7 +192,8 @@ def evaluate(game, legs: list[Leg], settlement: str = "reduce",
 def bootstrap_model_uncertainty(ctx, game_id: str, legs: list[Leg], B: int = 20,
                                 n_sims: int = 2000, seed: int = 0, cutoff=None,
                                 mode: str = "independent", home_spread: float | None = None,
-                                total: float | None = None, qb_exits: bool = True) -> dict:
+                                total: float | None = None, qb_exits: bool = True,
+                                pass_shock: float = 0.0) -> dict:
     """Refit the drive model and player usage models on bootstrap resamples, rerun
     the simulation for each, and report the spread of the joint probability.
     In market_anchored mode every refit is re-anchored to the same line, so the
@@ -203,7 +204,8 @@ def bootstrap_model_uncertainty(ctx, game_id: str, legs: list[Leg], B: int = 20,
     for b in range(B):
         g = simulate_game(ctx, game_id, n_sims, seed=int(rng.integers(1 << 31)), cutoff=cutoff,
                           bootstrap_rng=np.random.default_rng(int(rng.integers(1 << 31))),
-                          mode=mode, home_spread=home_spread, total=total, qb_exits=qb_exits)
+                          mode=mode, home_spread=home_spread, total=total, qb_exits=qb_exits,
+                          pass_shock=pass_shock)
         G = grade_all(legs, g)
         ps.append((G == WIN).all(1).mean())
         legp.append((G == WIN).mean(0))
@@ -265,15 +267,19 @@ def main(argv=None):
     ap.add_argument("--total", type=float, help="game total for market_anchored; default: nflverse line")
     ap.add_argument("--qb-exits", default="on", choices=["on", "off"],
                     help="simulate starting-QB early exits (default on)")
+    ap.add_argument("--pass-shock", default="off", choices=["on", "off"],
+                    help="shared per-game passing shock (Milestone 2.7; default off)")
     ap.add_argument("--book", help="price legs from this book's snapshot (default: best price per leg)")
     ap.add_argument("--no-feed-prices", action="store_true",
                     help="do not look up leg prices in the odds feed when --leg-odds is not given")
     a = ap.parse_args(argv)
     qx = a.qb_exits == "on"
+    from .simulator import PASS_SHOCK_SD
+    shk = PASS_SHOCK_SD if a.pass_shock == "on" else 0.0
     ctx = load_context()
     names = player_names()
     game = simulate_game(ctx, a.game_id, a.sims, seed=a.seed, mode=a.mode,
-                         home_spread=a.spread, total=a.total, qb_exits=qx)
+                         home_spread=a.spread, total=a.total, qb_exits=qx, pass_shock=shk)
     legs = [parse_leg(s, game, names) for s in a.leg]
     feed_note = []
     if a.leg_odds is None and not a.no_feed_prices:
@@ -300,7 +306,8 @@ def main(argv=None):
             feed_note.append("  Not every leg has a feed price, so EV is not computed (enter --leg-odds).")
     mu = bootstrap_model_uncertainty(ctx, a.game_id, legs, a.bootstrap, a.bootstrap_sims,
                                      seed=a.seed + 1, mode=game.anchor["mode"],
-                                     home_spread=a.spread, total=a.total, qb_exits=qx) if a.bootstrap else None
+                                     home_spread=a.spread, total=a.total, qb_exits=qx,
+                                     pass_shock=shk) if a.bootstrap else None
     res = evaluate(game, legs, a.settlement, a.leg_odds, a.parlay_odds, mu)
     print(f"{game.game_id} ({game.away_team} @ {game.home_team}, {game.gameday:%Y-%m-%d}); "
           f"models fit on data before {game.team_model.cutoff:%Y-%m-%d}; N = {a.sims}")
