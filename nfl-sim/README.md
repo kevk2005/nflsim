@@ -545,6 +545,7 @@ Per the spec, keep each change only if the walk-forward shows it helps. Report Q
 Any change here follows the usual rule: tune on 2018–2020 only, and keep it only if margin = 3, one-score share, OT and ties move toward actual without measurably worse Brier, log loss or total error.
 
 ## Known limitations
+- **QB + own WR/TE same-game parlays are likely underpriced.** Out of sample (2024–25), QB–receiver correlations run about 0.04–0.07 below actual (QB pass yds ~ WR1 0.405 vs 0.448, ~WR2 0.339 vs 0.409, ~TE1 0.277 vs 0.361). So the model's joint probability for "QB over + his receiver over" legs is likely too low. The Milestone 2.7 shock that narrows this gap failed its keep test and is off (see "Milestone 2.7").
 - Totals run about 0.8 points high (independent mode). The model lags shifts in league scoring.
 - Close games still reach the final two minutes too rarely, so 3-point finals (13.1% vs 15.6%) and one-score games (45.5% vs 49.8%) are low. Ties are about double actual (0.65% vs 0.33%).
 - The number of drives isn't drawn from its own distribution. It comes out of the clock (sampled drive durations).
