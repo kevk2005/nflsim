@@ -1,0 +1,121 @@
+{
+ "timestamp": "2024-09-06T00:15:00Z",
+ "previous_timestamp": "2024-09-06T00:10:00Z",
+ "next_timestamp": "2024-09-06T00:20:00Z",
+ "data": {
+  "id": "testevent_bal_kc",
+  "sport_key": "americanfootball_nfl",
+  "commence_time": "2024-09-06T00:20:00Z",
+  "home_team": "Kansas City Chiefs",
+  "away_team": "Baltimore Ravens",
+  "bookmakers": [
+   {
+    "key": "bookA",
+    "title": "bookA",
+    "last_update": "2024-09-05T23:10:00Z",
+    "markets": [
+     {
+      "key": "player_pass_yds",
+      "last_update": "2024-09-05T23:10:00Z",
+      "outcomes": [
+       {
+        "name": "Over",
+        "description": "Patrick Mahomes",
+        "price": -115,
+        "point": 265.5
+       },
+       {
+        "name": "Under",
+        "description": "Patrick Mahomes",
+        "price": -105,
+        "point": 265.5
+       }
+      ]
+     },
+     {
+      "key": "player_reception_yds",
+      "last_update": "2024-09-05T23:10:00Z",
+      "outcomes": [
+       {
+        "name": "Over",
+        "description": "Rashee Rice",
+        "price": -110,
+        "point": 55.5
+       },
+       {
+        "name": "Under",
+        "description": "Rashee Rice",
+        "price": -110,
+        "point": 55.5
+       },
+       {
+        "name": "Over",
+        "description": "Fake Testplayer",
+        "price": -110,
+        "point": 20.5
+       },
+       {
+        "name": "Under",
+        "description": "Fake Testplayer",
+        "price": -110,
+        "point": 20.5
+       }
+      ]
+     },
+     {
+      "key": "player_anytime_td",
+      "last_update": "2024-09-05T23:10:00Z",
+      "outcomes": [
+       {
+        "name": "Yes",
+        "description": "Derrick Henry",
+        "price": -130
+       },
+       {
+        "name": "No",
+        "description": "Derrick Henry",
+        "price": 100
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "key": "bookB",
+    "title": "bookB",
+    "last_update": "2024-09-05T23:10:00Z",
+    "markets": [
+     {
+      "key": "player_reception_yds",
+      "last_update": "2024-09-05T23:10:00Z",
+      "outcomes": [
+       {
+        "name": "Over",
+        "description": "Rashee Rice",
+        "price": -105,
+        "point": 55.5
+       },
+       {
+        "name": "Under",
+        "description": "Rashee Rice",
+        "price": -115,
+        "point": 55.5
+       }
+      ]
+     },
+     {
+      "key": "player_anytime_td",
+      "last_update": "2024-09-05T23:10:00Z",
+      "outcomes": [
+       {
+        "name": "Yes",
+        "description": "Derrick Henry",
+        "price": -120
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

@@ -59,7 +59,8 @@ def simulate_game(ctx: Context, game_id: str, n_sims: int = 10000, seed: int = 0
                   cutoff=None, team_model: TeamModel | None = None,
                   bootstrap_rng: np.random.Generator | None = None,
                   mode: str = "independent", home_spread: float | None = None,
-                  total: float | None = None, qb_exits: bool = True) -> SimulatedGame:
+                  total: float | None = None, qb_exits: bool = True,
+                  as_of: pd.Timestamp | None = None) -> SimulatedGame:
     """Simulate one game. Models are fit on data dated before `cutoff`
     (default: the game day). With `bootstrap_rng`, the drive model and every
     player's usage history are bootstrap-resampled (one model-uncertainty draw).
@@ -71,7 +72,10 @@ def simulate_game(ctx: Context, game_id: str, n_sims: int = 10000, seed: int = 0
     fallback is recorded in `anchor` and `missing`.
 
     qb_exits=False turns off simulated starting-QB early exits (blowout pulls and
-    injury/benching); the starter then plays every snap."""
+    injury/benching); the starter then plays every snap.
+
+    as_of: latest time an odds snapshot may come from (default: now). Snapshots
+    from after kickoff are never used, whatever as_of is."""
     from .anchor import MODES, describe, get_line, solve_anchor
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
@@ -96,12 +100,13 @@ def simulate_game(ctx: Context, game_id: str, n_sims: int = 10000, seed: int = 0
     info = {"mode": "independent"}
     if mode == "market_anchored":
         grow = ctx.games[ctx.games["game_id"] == game_id].iloc[0]
-        line = get_line(grow, home_spread, total)
+        line = get_line(grow, home_spread, total, snapshot=odds_snapshot_for(game_id, grow, as_of))
         if line.complete:
             a = solve_anchor(team_model, mu, line.target_margin, line.target_total, n_sims, seed)
             sim = a.sim
             info = {"mode": "market_anchored", "target_margin": line.target_margin,
                     "target_total": line.target_total, "source": line.source, "as_of": line.as_of,
+                    "warning": line.warning,
                     "d_home": a.d_home, "d_away": a.d_away, "converged": a.converged,
                     "iterations": a.iterations, "err_margin": a.err_margin,
                     "err_total": a.err_total, "base_margin": a.base_margin,
@@ -136,6 +141,21 @@ def simulate_game(ctx: Context, game_id: str, n_sims: int = 10000, seed: int = 0
     missing = describe(info, row["home_team"], row["away_team"]) + missing
     return SimulatedGame(game_id, row["home_team"], row["away_team"], row["gameday"], n_sims,
                          sim, ps, team_model, missing, row, info)
+
+
+def odds_snapshot_for(game_id: str, game_row: pd.Series, as_of=None) -> dict | None:
+    """Latest pre-kickoff odds-feed consensus for a game, or None."""
+    from . import odds_feed as F
+    sched = F.load_schedule()
+    k = sched.loc[sched.game_id == game_id, "kickoff_utc"]
+    if k.empty or pd.isna(k.iloc[0]):
+        return None
+    kickoff = k.iloc[0]
+    ref = pd.Timestamp(as_of) if as_of is not None else F.utcnow()
+    snap = F.latest_consensus(game_id, kickoff, as_of=ref)
+    if snap is not None:
+        snap["age_ref"] = "kickoff" if kickoff <= ref else "now"
+    return snap
 
 
 def player_table(game: SimulatedGame, names: dict | None = None) -> pd.DataFrame:

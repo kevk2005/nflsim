@@ -78,11 +78,15 @@ def walk_forward(start_season: int = 2021, n_sims: int = 4000, seed: int = 0,
             sseed = int(rng.integers(1 << 31))
             anc = {}
             if mode == "market_anchored":
-                line = get_line(pd.Series(g._asdict()))
+                from .pipeline import odds_snapshot_for
+                # backtest: a snapshot is usable only if taken before kickoff (enforced inside)
+                line = get_line(pd.Series(g._asdict()),
+                                snapshot=odds_snapshot_for(g.game_id, pd.Series(g._asdict()),
+                                                           as_of=pd.Timestamp("2100-01-01", tz="UTC")))
                 if line.complete:
                     a = solve_anchor(tm, mu, line.target_margin, line.target_total, n_sims, sseed)
                     r = a.sim
-                    anc = {"anchored": True, "anchor_margin": line.target_margin,
+                    anc = {"anchored": True, "line_source": line.source, "anchor_margin": line.target_margin,
                            "anchor_total": line.target_total, "d_home": a.d_home, "d_away": a.d_away,
                            "converged": a.converged, "iterations": a.iterations,
                            "base_margin": a.base_margin, "base_total": a.base_total}

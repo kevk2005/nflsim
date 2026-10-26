@@ -7,3 +7,5 @@ __pycache__/
 .DS_Store
 # downloaded nflverse data and everything derived from it (rebuild: ingest -> features -> players -> backtests)
 nfl-sim/data/
+# secrets / local settings
+nfl-sim/.env

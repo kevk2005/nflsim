@@ -1,0 +1,201 @@
+[
+ {
+  "id": "testevent_bal_kc",
+  "sport_key": "americanfootball_nfl",
+  "sport_title": "NFL",
+  "commence_time": "2024-09-06T00:20:00Z",
+  "home_team": "Kansas City Chiefs",
+  "away_team": "Baltimore Ravens",
+  "bookmakers": [
+   {
+    "key": "bookA",
+    "title": "bookA",
+    "last_update": "2024-09-05T23:10:00Z",
+    "markets": [
+     {
+      "key": "h2h",
+      "last_update": "2024-09-05T23:10:00Z",
+      "outcomes": [
+       {
+        "name": "Kansas City Chiefs",
+        "price": -150
+       },
+       {
+        "name": "Baltimore Ravens",
+        "price": 130
+       }
+      ]
+     },
+     {
+      "key": "spreads",
+      "last_update": "2024-09-05T23:10:00Z",
+      "outcomes": [
+       {
+        "name": "Kansas City Chiefs",
+        "price": -110,
+        "point": -3.0
+       },
+       {
+        "name": "Baltimore Ravens",
+        "price": -110,
+        "point": 3.0
+       }
+      ]
+     },
+     {
+      "key": "totals",
+      "last_update": "2024-09-05T23:10:00Z",
+      "outcomes": [
+       {
+        "name": "Over",
+        "price": -110,
+        "point": 46.5
+       },
+       {
+        "name": "Under",
+        "price": -110,
+        "point": 46.5
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "key": "bookB",
+    "title": "bookB",
+    "last_update": "2024-09-05T23:10:00Z",
+    "markets": [
+     {
+      "key": "h2h",
+      "last_update": "2024-09-05T23:10:00Z",
+      "outcomes": [
+       {
+        "name": "Kansas City Chiefs",
+        "price": -140
+       },
+       {
+        "name": "Baltimore Ravens",
+        "price": 120
+       }
+      ]
+     },
+     {
+      "key": "spreads",
+      "last_update": "2024-09-05T23:10:00Z",
+      "outcomes": [
+       {
+        "name": "Kansas City Chiefs",
+        "price": -105,
+        "point": -2.5
+       },
+       {
+        "name": "Baltimore Ravens",
+        "price": -115,
+        "point": 2.5
+       }
+      ]
+     },
+     {
+      "key": "totals",
+      "last_update": "2024-09-05T23:10:00Z",
+      "outcomes": [
+       {
+        "name": "Over",
+        "price": -112,
+        "point": 47.0
+       },
+       {
+        "name": "Under",
+        "price": -108,
+        "point": 47.0
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "key": "bookC",
+    "title": "bookC",
+    "last_update": "2024-09-05T23:10:00Z",
+    "markets": [
+     {
+      "key": "h2h",
+      "last_update": "2024-09-05T23:10:00Z",
+      "outcomes": [
+       {
+        "name": "Kansas City Chiefs",
+        "price": -160
+       },
+       {
+        "name": "Baltimore Ravens",
+        "price": 135
+       }
+      ]
+     },
+     {
+      "key": "spreads",
+      "last_update": "2024-09-05T23:10:00Z",
+      "outcomes": [
+       {
+        "name": "Kansas City Chiefs",
+        "price": -110,
+        "point": -3.5
+       },
+       {
+        "name": "Baltimore Ravens",
+        "price": -110,
+        "point": 3.5
+       }
+      ]
+     },
+     {
+      "key": "totals",
+      "last_update": "2024-09-05T23:10:00Z",
+      "outcomes": [
+       {
+        "name": "Over",
+        "price": -110,
+        "point": 46.0
+       },
+       {
+        "name": "Under",
+        "price": -110,
+        "point": 46.0
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ {
+  "id": "testevent_unmatched",
+  "sport_key": "americanfootball_nfl",
+  "commence_time": "2024-09-03T17:00:00Z",
+  "home_team": "Dallas Cowboys",
+  "away_team": "Chicago Bears",
+  "bookmakers": [
+   {
+    "key": "bookA",
+    "title": "bookA",
+    "last_update": "2024-09-05T23:10:00Z",
+    "markets": [
+     {
+      "key": "h2h",
+      "last_update": "2024-09-05T23:10:00Z",
+      "outcomes": [
+       {
+        "name": "Dallas Cowboys",
+        "price": -200
+       },
+       {
+        "name": "Chicago Bears",
+        "price": 170
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+]

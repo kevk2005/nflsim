@@ -49,7 +49,7 @@ nfl-sim/
 ```
 
 ## Known data gaps (do not try to fabricate these)
-- **Player prop lines and same-game parlay prices:** not in nflverse. Prop calibration must use self-set lines (e.g. each player's projected median, or fixed lines). No prop ROI backtests unless real historical lines are added later.
+- **Player prop lines and same-game parlay prices:** not in nflverse. Prop calibration must use self-set lines (e.g. each player's projected median, or fixed lines). No prop ROI backtests except on real lines from the odds feed (Milestone 2.6): the one-time 2026 backfill plus our own live pre-kickoff pulls going forward.
 - **Weather forecasts:** nflverse has game-time conditions, not forecasts. Do not use actual conditions as a pregame feature in backtests; mark weather as unavailable historically.
 - **Schemes and coaching changes:** not available. Skip.
 - **Pressure and advanced charting:** only recent seasons. Use only where present; mark missing otherwise.
@@ -87,10 +87,28 @@ nfl-sim/
 - Known correlations appear naturally without being hard-coded: e.g. a QB's passing yards and his top WR's receiving yards move together.
 - Unit tests pass for odds conversion, push and void handling, payout math, aggregation and K/N calculation.
 
+## Milestone 2.6: Odds feed and line history (approved addition)
+Source: The Odds API (paid plan, 20,000 credits/month). Credits cost real money, so budget controls come first. **Live pulls for upcoming games, plus one approved, one-time historical backfill of the 2026 season to date** (completed games before 2026-10-26). After that backfill the historical endpoint is disabled again unless another one is explicitly approved. Every live pull is saved with its UTC timestamp, so the project builds its own line history going forward.
+
+**Build:**
+1. `odds_feed.py`: key from `ODDS_API_KEY` in `.env` (git-ignored; never printed or logged). Endpoints, NFL sport key, prop market names, bookmaker keys and credit costs are taken only from the official docs.
+2. Budget controls: monthly caps per category (defaults: live game lines 2,000, live props 16,000, reserve 2,000 never spent automatically). Estimate every call's cost first; refuse if it would exceed its cap or drop remaining credits below the reserve. Log every call (time, endpoint, estimated and actual credits, remaining). `--dry-run` everywhere; a `credits` command shows usage by category this month.
+3. Live game lines: moneyline, spreads, totals for upcoming NFL games, US books, American odds; raw JSON saved with UTC pull time; normalized to `odds_snapshots.parquet` (game × book × market × pull time); games mapped to nflverse `game_id` by teams and kickoff date (unmatched logged, never guessed); per-snapshot consensus (median spread/total, de-vigged moneyline).
+4. Live player props for the `markets.py` markets, per book (player, market, line, over/under prices, pull time); players mapped to `gsis_id` by name, team and position (unmatched logged, never guessed; match rate reported); two-sided props de-vigged.
+5. Optional `--bookmaker KEY` filter on every pull (docs: `bookmakers` takes priority over `regions`; up to 10 bookmakers = 1 region, so one book costs the same as the `us` region).
+6. Integration: market-anchored line priority = user `--spread/--total` → latest pre-kickoff odds snapshot → nflverse → independent fallback, printing source, pull time and a warning if older than 6 hours. No snapshot pulled after a game's kickoff is ever used for that game. The parlay CLI can price legs from the latest snapshot (printing book and pull time); user-entered odds override.
+7. One-time backfill (approved revision): 2026 completed games only; one snapshot per game, the closest available before kickoff (request `date` = kickoff − 1 min), game lines (one call per kickoff slot) plus the 9 supported prop markets (one call per game); 10 US books in one request including fanatics (docs: up to 10 bookmakers = 1 region); historical cap 14,000 for 2026-10 only, then 0; `--dry-run` first and `--confirm` only after approval; resumable and idempotent (never pays twice for a saved game); the API's snapshot time stored on every row; any call billed above its estimate stops the run.
+8. CLI: `pull-lines`, `pull-props`, `latest [--game-id]`, `credits`, `backfill`, `check-books`, all with `--dry-run`.
+
+**Done when:**
+- Tests (on small saved example responses, test-only, no real API calls) cover parsing, game/player mapping, consensus, de-vig, budget caps, reserve floor, dry-run, the bookmaker filter, saved line history, refusal of historical endpoints without an active approval, the one-time backfill (10-book request, snapshot times, resume/idempotency, cap stop, empty-snapshot step-back, cost-overrun stop, approval consumed on completion), the stale-snapshot warning and the no-post-kickoff rule.
+- One real live snapshot is pulled and reported (games, books, props, player match rate, credits used).
+
 ## Milestone 3: Backtest and interface
 
 **Build:**
 1. `backtest.py`: retrain **once per week** using only data before that week. For each historical game, simulate and record predictions. Report: win probability calibration, score error, prop Brier score and log loss at self-set lines, calibration charts by market and probability bucket, results by season. For parlays, generate synthetic same-game parlays from historical games and check calibration of joint probabilities; report sample sizes and note that this check is noisy.
+   - **Prop ROI (updated after Milestone 2.6):** prop ROI backtesting uses the backfilled 2026 lines (the API's snapshot before kickoff) plus every line we save going forward from live pre-kickoff pulls, priced at those saved prices and settled against official results. No self-set lines, no invented prices. **Until enough games are collected, Milestone 3 evaluates calibration only** (win probability, scores, props at self-set lines, synthetic SGPs); any ROI figure must state how many games and props it covers. Same-game-parlay ROI is not possible: the feed has no real SGP prices.
 2. `app/streamlit_app.py`: parlay builder. User picks a game, then adds legs (player, market, over/under, line), enters the sportsbook's offered odds, sets the simulation count, and runs. Show: each leg's probability, joint parlay probability with confidence interval, independence benchmark, fair odds, offered odds, expected ROI, pairwise correlations, Monte Carlo error vs model uncertainty, and a list of missing data used in this prediction.
 
 **Done when:**

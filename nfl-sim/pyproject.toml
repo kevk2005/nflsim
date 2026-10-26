@@ -16,6 +16,7 @@ dependencies = [
   "statsmodels",
   "scikit-learn",
   "streamlit",
+  "certifi",
 ]
 
 [project.optional-dependencies]

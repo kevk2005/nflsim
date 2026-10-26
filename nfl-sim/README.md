@@ -1,7 +1,7 @@
 # nfl-sim
 
 A Monte Carlo simulator for NFL games, built from pregame information. See `../SPEC.md` for the full plan.
-**Status: Milestones 1 (data, team model, drive-level simulator) and 2 (players, markets, parlays, odds) are done, plus a market-anchored simulation mode and a cleanup round (template-leakage check, QB early exits, close-game endings).** Milestone 3 (full backtest with prop calibration, Streamlit app) is not started.
+**Status: Milestones 1 (data, team model, drive-level simulator) and 2 (players, markets, parlays, odds) are done, plus a market-anchored simulation mode and a cleanup round (template-leakage check, QB early exits, close-game endings).** Milestone 2.6 (live odds feed that builds our own line history) is built; the first live pull needs an API key. Milestone 3 (full backtest with prop calibration, Streamlit app) is not started.
 
 ## Install
 ```bash
@@ -55,6 +55,7 @@ Leg syntax: `<market>:<player name or gsis_id>:<over|under>:<line>`, `anytime_td
 | `odds.py` | American ↔ decimal ↔ probability, two-way de-vig (multiplicative, power), fair odds, EV/ROI. |
 | `pipeline.py` | Loads all inputs once; `simulate_game()` runs the team and player layers for one game, in either mode. |
 | `anchor.py` | Market-anchored mode: market line lookup, the two-parameter solver, and its report. |
+| `odds_feed.py` | The Odds API client (live pulls only) with budget caps and ledger, lines/props for upcoming games, saved line history, game/player mapping, consensus (see "Odds feed"). |
 | `backtest.py` | Weekly walk-forward. For each week it refits on data dated before the week's first game, then simulates every game. Compares the model against a home-team baseline, Elo and the closing market. Also checks league-wide distributions. |
 
 ## Validation (walk-forward, 2021 → 2026 week 7, 1,530 games, 4,000 sims per game)
@@ -345,6 +346,102 @@ Game-level effect (2021+, independent): Brier 0.2208 → 0.2214, log loss 0.6319
 
 What improved: OT is now close to actual (6.0% vs 6.3%), 3-point finals moved partway (13.1% vs 15.6%), and total MAE improved. What did **not** improve: one-score share barely moved (45.5% vs 49.8%), and ties are now about double actual (0.65% vs 0.33%). The remaining shortfall: too few close games reach the final 2:00. The sim has 61 "down 1–3, ≤ 2:00" drives per 803 games vs 102 actual, and 34 tied ones vs 73. That's a clock/possession-count issue, not drive-outcome choice.
 
+## Odds feed (Milestone 2.6): The Odds API, live pulls + one approved 2026 backfill
+**Live pulls build our own history, plus one approved 2026 backfill.** Routine pulls are for **upcoming** games only. The single exception is a one-time, approved backfill of the 2026 season to date (see below). Outside that approved run the client refuses every `/historical/` endpoint. **Every live pull is saved permanently with its UTC pull time** (raw JSON plus normalized rows, never overwritten), so each pull adds to a line history we build ourselves going forward. That history is what Milestone 3 will use for prop ROI (see SPEC.md).
+
+**Setup.** Put your key in `nfl-sim/.env` as `ODDS_API_KEY=...` (copy `.env.example`; `.env` is git-ignored). The key is read from the environment or `.env`, sent only as the `apiKey` query parameter, and never printed, logged or saved: ledger entries store the endpoint and parameters without it, and raw JSON files contain only the response. Before the first paid call, run `python -m nflsim.odds_feed credits --refresh` (a free `/v4/sports` call) so the budget knows how many credits remain.
+
+```bash
+python -m nflsim.odds_feed pull-lines [--dry-run] [--bookmaker KEY]                       # all upcoming games
+python -m nflsim.odds_feed pull-props [--dry-run] [--bookmaker KEY] [--days 7] [--game-id ID]
+python -m nflsim.odds_feed latest     [--game-id ID]       # latest pre-kickoff consensus + prop coverage
+python -m nflsim.odds_feed credits    [--refresh]          # usage by category this month
+python -m nflsim.odds_feed backfill   --dry-run | --confirm [--max-calls N]   # one-time 2026 backfill
+python -m nflsim.odds_feed check-books --dry-run | --confirm                # which books had data in week 1
+```
+
+**Confirmed costs** (official v4 docs, read 2026-10-26):
+
+| Call | Endpoint | Cost |
+|---|---|---|
+| Game lines for all upcoming games | `/v4/sports/americanfootball_nfl/odds`, markets h2h,spreads,totals | markets × regions = **3** (0 if no events) |
+| Upcoming event list | `/v4/sports/americanfootball_nfl/events` | free |
+| Props for one game | `/v4/sports/americanfootball_nfl/events/{id}/odds`, 9 prop markets | unique markets *returned* × regions = **≤ 9** |
+| Sports list (`credits --refresh`) | `/v4/sports` | free |
+
+- Usage headers read after every call: `x-requests-last` (actual cost), `x-requests-remaining`, `x-requests-used`.
+- Player props are only available per event.
+- Prop market keys: `player_pass_yds`, `player_pass_tds`, `player_pass_attempts`, `player_pass_completions`, `player_rush_yds`, `player_rush_attempts`, `player_receptions`, `player_reception_yds`, `player_anytime_td`.
+
+**`--bookmaker` filter.** `--bookmaker fanatics` sends `bookmakers=fanatics` instead of `regions=us`. The docs say "if both `bookmakers` and `regions` are specified, `bookmakers` takes priority" and "every group of 10 bookmakers is the equivalent of 1 region".
+- **Cost:** one bookmaker costs the same as the whole `us` region: 3 credits for lines, ≤ 9 per game for props. It does not cut the cost per call. For props, billing counts only markets actually returned, so a book that lists fewer prop markets can come out a little cheaper.
+- **Valid keys:** the docs' US lists. `us`: betonlineag, betmgm, betrivers, betus, bovada, williamhill_us, draftkings, fanatics, fanduel, lowvig, mybookieag. `us2`: ballybet, betanysports, betparx, courtside, espnbet, fliff, hardrockbet, hardrockbet_az, hardrockbet_fl, hardrockbet_oh, rebet. Unknown keys are refused before any call.
+- **Tagging:** filtered pulls are tagged with `bookmaker_filter` in the stored rows and file names.
+
+**Budget (defaults, set in `.env`):** live game lines **2,000** / month, live props **16,000**, reserve **2,000** (never spent automatically). Together that's the whole 20,000-credit plan.
+- **Before every call:** its cost is estimated as an upper bound (all requested markets returned).
+- **Refusal rules:** the call is refused if it would push its category over the monthly cap (calendar month, UTC). It's also refused if it would leave fewer than 2,000 credits remaining, per the API's own `x-requests-remaining`.
+- **Unknown remaining:** paid calls are refused until `credits --refresh` has been run.
+- **Ledger:** every call is logged to `data/raw/odds/ledger.jsonl` with time, endpoint, parameters (no key), estimated and actual credits, remaining and HTTP status. Usage counts actual cost.
+- **Dry run:** `--dry-run` prints the planned calls and estimated total without calling anything.
+
+**Storage and mapping.**
+- Raw responses go to `data/raw/odds/{lines,props}/<UTC pull time>[_<book>].json`.
+- Normalized rows: `data/processed/odds_snapshots.parquet` (game × book × market × outcome × pull time) and `prop_snapshots.parquet` (book, player, market, line, side, price, de-vigged fair probability via `odds.devig`).
+- Per-pull consensus in `odds_consensus.parquet`: median home spread and total across books, median of per-book de-vigged moneyline probabilities.
+- Games are mapped to nflverse `game_id` by both team names plus the US-Eastern kickoff date. A home/away swap on the same date is matched and flagged.
+- Players are mapped to `gsis_id` by exact normalized name within that game's two teams (pregame roster + season roster). Position only breaks ties. Anything else is left unmatched and logged with the raw name (`odds_unmatched_games.csv`, `odds_unmatched_players.csv`), never guessed.
+
+**Integration.**
+- Market-anchored line priority: user `--spread/--total` → latest pre-kickoff saved pull (median of books) → nflverse → independent fallback. The output prints the source and pull time, and a WARNING when the pull is more than 6 hours older than now (or than kickoff, for past games).
+- A pull taken at or after a game's kickoff is never used for that game.
+- `nflsim.parlay` without `--leg-odds` looks up each leg in the latest pre-kickoff pull. It uses an exact line match and picks the best price across books, or `--book NAME`, and prints the book and pull time.
+- The feed has no same-game-parlay prices, so that parlay price is the product of leg prices and is flagged as not a real SGP quote. `--leg-odds/--parlay-odds` override; `--no-feed-prices` disables the lookup.
+
+**Suggested weekly schedule (fits the caps; a month ≈ 4.3 weeks):**
+- **Game lines (3 credits per pull):** every 2 hours 8 am–midnight ET daily (56 pulls), plus every 15 minutes in the 2 hours before each kickoff slot (TNF, Sun early/late, SNF, MNF, intl: ≈ 48). About 104 pulls/week ≈ 312 credits ≈ **1,340/month** (cap 2,000).
+- **Props (≤ 9 per game; a 14–16-game slate is ≤ 126–144):**
+  - full slate twice a day Tue–Sat (10 × ≤ 144 = 1,440);
+  - Sunday full slate at 8, 10 and 12 ET (≤ 432);
+  - each game once more ~45 minutes before its kickoff (≤ 144).
+  - Total ≤ 2,016/week ≈ **8,700/month** (cap 16,000). The ~7,000 left can buy extra near-kickoff pulls (e.g. two more per game ≈ 1,240/month) or more books via separate `--bookmaker` pulls.
+- Run any new schedule with `--dry-run` first, and check `credits` weekly.
+
+**One-time 2026 backfill (approved revision).**
+- **Scope:** 2026 regular-season games completed before 2026-10-26 (weeks 1–7). That's **106 games in 45 kickoff slots**, from 2026_01_NE_SEA to 2026_07_KC_SEA.
+- **Snapshot:** one per game, the closest available before kickoff. The request uses `date` = kickoff − 1 minute, and the API returns the closest snapshot at or before that (5-minute grid).
+- **Calls:** game lines in one historical-odds call per kickoff slot, and the 9 prop markets in one historical-event-odds call per game.
+- **Books:** 10 US books in one request: draftkings, fanduel, betmgm, **betparx**, fanatics, betrivers, espnbet, hardrockbet, bovada, betonlineag.
+  - **Swap:** `check-books` at the 2026 opener showed williamhill_us offering only 1 of the 9 prop markets (anytime TD), so it was replaced by betparx (9/9; chosen after a 1-credit check of the other US books).
+  - **Coverage of our 9 prop markets at the opener (2026-09-10 00:15:36 UTC snapshot):** draftkings, betmgm, betparx, fanatics, hardrockbet, betonlineag 9/9; espnbet 8 (no anytime TD); bovada 8 (no rush attempts); betrivers 7; fanduel 6 (no attempts/completions).
+  - **Other US books checked:** ballybet and fliff 9/9; betus, lowvig, mybookieag, rebet and betanysports game lines only; courtside no data.
+- **10 books = 1 region on historical calls:** confirmed by reference only. The historical endpoints say "parameters are the same as for the /odds endpoint", and the /odds `bookmakers` notes say "every group of 10 bookmakers is the equivalent of 1 region". The historical cost sections don't repeat it. **Guard:** if any call is billed more than its estimate (`x-requests-last`), the run stops after that call.
+- **Per-book history:** the docs don't publish start dates per bookmaker, only NFL from 2020-06-06 and player props from 2023-05-03. `check-books` (2 credits: historical events + historical event markets for the first 2026 game) shows which of the 10 books had which markets at the start of the window.
+- **Estimated cost** (`backfill --dry-run`, upper bounds): game lines 45 × 30 = 1,350, props 106 × 90 = 9,540, **total 10,890**, plus 2 for `check-books`. Props bill only the markets actually returned, so the real cost should be at most this.
+- **Budget:** historical cap 14,000 for 2026-10 only (`ODDS_HISTORICAL_APPROVAL=2026-10:14000`), then 0. Live caps stay 2,000 / 16,000 and the reserve stays 2,000. The reserve floor uses the API's real remaining credits, so in 2026-10 live pulls only get what the backfill leaves above the reserve.
+- **Safety:**
+  - `--dry-run` first; spending needs `--confirm`.
+  - Resumable and idempotent: `backfill_state.json` records each finished slot and game, and saved raw responses are re-parsed from disk, never bought twice.
+  - Every row stores the API's own snapshot `timestamp` as `snapshot_ts`.
+  - An empty snapshot (not billed) steps back to `previous_timestamp` up to 6 times.
+  - When the plan is complete, the approval is marked used and the historical endpoint is disabled again until a new explicit approval.
+
+**Backfill result (run 2026-10-26).**
+- **Cost:** 151 calls, **10,890 credits billed = the estimate**. Every game returned all 9 prop markets, so the upper bound was hit exactly. There were no overruns and no errors.
+- **Book checks:** 3 more credits (2 for `check-books`, 1 for the replacement check).
+- **Saved:** 45 slot snapshots of game lines and 106/106 games of props, 104,889 prop rows across the 10 books. Every row has the API's own `snapshot_ts`, all before kickoff.
+- **Game matching:** 0 unmatched games.
+- **Player matching:** 1,092 prop rows are anytime-TD outcomes that aren't players ("<Team> D/ST", "<Team> Defense", "No Scorer"); they're correctly left unmatched. Excluding them, **98.5% of player-games matched** (2,905 of 2,949) and 99.6% of player rows.
+- **Unmatched real names (14 names, 44 player-games), logged and not guessed:** James Jordan, Elijah Dotson, Drew Ogletree, Joshua Palmer, Hollywood Brown, Cam Sample, Malik Taylor, Franklin Gore Jr., Cam Brown, Josiah Deguara, Elerson G. Smith, DeVonta Smith, Brandon Johnson, Irv Charles. Most are nickname/legal-name variants or players not on that season's roster for either team; 4 are ambiguous (two same-named players).
+- **Approval:** consumed. The historical endpoint is disabled again.
+
+**First live snapshot (2026-10-26 20:43 UTC).**
+- **Game lines:** 3 credits (est 3). 15 upcoming games, 11 books, 0 unmatched games.
+- **Props:** 14 calls, **29 credits** (est 126). Most week-8 games so far only have anytime-TD posted (1 credit each). DAL @ PHI and CAR @ GB had full markets (9 each); PHI @ WAS had none yet (0).
+- **Player matching:** 99.2% of player-games. Unmatched: Drew Ogletree, Hollywood Brown, Joshua Palmer.
+
+**Prop ROI (Milestone 3).** Prop ROI will use the backfilled 2026 lines plus every line we save going forward from pre-kickoff pulls. Until enough games are collected, Milestone 3 evaluates calibration only. Saved history now: **106 completed 2026 games (weeks 1–7) with pre-kickoff props from 10 books**, plus live pulls for upcoming games. Credits remaining after all of this: **9,075** of 20,000 for 2026-10.
+
 ## Uncertainty
 Two kinds, always reported separately:
 - **Monte Carlo error** (finite simulations): Wilson CI / standard error. It shrinks as N grows.
@@ -355,7 +452,7 @@ Two kinds, always reported separately:
 - **Starting QB**: the schedule's QB columns are postgame facts and are used only for scoring the guess. The pregame QB is the depth-chart QB1 (weekly charts ≤2024; the latest timestamped snapshot before game day for 2025+). If that QB's final injury status is *Out*, the next QB on the chart is used. If there's no depth chart, the previous game's main passer is used. It matched the actual starter 89–96% of the time, depending on season.
 - **Injury timing**: the final weekly report status is assumed to be known before kickoff. Out and Doubtful → inactive; Questionable → active (with the player's usual P(active)).
 - **Game-day inactives** (90 minutes before kickoff) are not used; availability uncertainty is modeled with P(active) instead.
-- **Prop lines and SGP prices**: not in nflverse. Nothing here is a real prop price; EV needs odds entered by the user. No prop ROI backtests.
+- **Prop lines and SGP prices**: not in nflverse. Real prop prices come only from our own live pulls (Milestone 2.6), saved from now on; there is no history before the first pull. Same-game-parlay prices are not available from any source here.
 - **Return TDs** are not credited to any player (anytime-TD probability is slightly low for returners).
 - **Market lines**: in `independent` mode, closing lines are used only as a benchmark and never as features. In `market_anchored` mode, the spread and total are the anchor: the simulation is shifted to match them (see "Simulation modes"). They are still never inputs to the team, drive or player models.
 - **Kickoff rule changes (2024, 2025)**: field position after kicks comes from the most recent 1,200 kicks, so the model takes part of a season to adapt after a rule change.

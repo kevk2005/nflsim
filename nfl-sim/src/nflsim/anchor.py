@@ -54,6 +54,7 @@ class Line:
     source: str
     as_of: str | None
     note: str = ""
+    warning: str = ""
 
     @property
     def complete(self) -> bool:
@@ -68,17 +69,31 @@ def _schedule_downloaded_at(season: int) -> str | None:
 
 
 def get_line(game_row: pd.Series, home_spread: float | None = None,
-             total: float | None = None) -> Line:
-    """Market line for a game. User values win; otherwise nflverse schedules.
+             total: float | None = None, snapshot: dict | None = None) -> Line:
+    """Market line for a game. Priority, per component (spread and total):
+    user value -> latest pre-kickoff odds snapshot (odds_feed.latest_consensus,
+    median over books) -> nflverse schedules -> missing (caller falls back to
+    independent mode).
 
     home_spread is the sportsbook spread for the HOME team (negative = home
     favored), as a bettor would type it. It is converted to the expected home
     margin = -home_spread. Never invents a line: missing values stay None.
     """
-    src, notes = [], []
+    src, notes, warn = [], [], ""
+    snap_ok = snapshot is not None
+    if snap_ok:
+        snap_desc = (f"The Odds API {snapshot['source']} snapshot at "
+                     f"{pd.Timestamp(snapshot['snapshot_time']):%Y-%m-%d %H:%M UTC}, "
+                     f"median of {snapshot['n_books']} books")
+        if snapshot.get("stale"):
+            warn = (f"WARNING: odds snapshot is {snapshot['age_hours']:.1f} h old "
+                    f"(> 6 h before {'kickoff' if snapshot.get('age_ref') == 'kickoff' else 'now/kickoff'})")
     if home_spread is not None:
         m = -float(home_spread)
         src.append(f"spread from user (home {home_spread:+g})")
+    elif snap_ok and not pd.isna(snapshot.get("home_spread")):
+        m = -float(snapshot["home_spread"])
+        src.append(f"spread from {snap_desc} (home {snapshot['home_spread']:+g})")
     else:
         v = game_row.get("mkt_spread_line")
         m = None if v is None or pd.isna(v) else float(v)
@@ -87,6 +102,9 @@ def get_line(game_row: pd.Series, home_spread: float | None = None,
     if total is not None:
         t = float(total)
         src.append("total from user")
+    elif snap_ok and not pd.isna(snapshot.get("total")):
+        t = float(snapshot["total"])
+        src.append(f"total from {snap_desc}")
     else:
         v = game_row.get("mkt_total_line")
         t = None if v is None or pd.isna(v) else float(v)
@@ -103,7 +121,11 @@ def get_line(game_row: pd.Series, home_spread: float | None = None,
         notes.append("no spread available")
     if t is None:
         notes.append("no total available")
-    return Line(m, t, "; ".join(src) or "none", as_of, "; ".join(notes))
+    if snap_ok and any("Odds API" in s for s in src):
+        as_of = (as_of + "; " if as_of else "") + (f"odds snapshot pulled {pd.Timestamp(snapshot['pulled_at']):%Y-%m-%d %H:%M UTC}")
+    if not any("Odds API" in s for s in src):
+        warn = ""
+    return Line(m, t, "; ".join(src) or "none", as_of, "; ".join(notes), warn)
 
 
 def shifted(mu: Matchup, s_home: float, s_away: float) -> Matchup:
@@ -194,7 +216,8 @@ def describe(info: dict, home: str, away: str) -> list[str]:
     tm, tt = info["target_margin"], info["target_total"]
     return [
         f"Mode: market_anchored. Line: {home} {-tm:+g} (expected {home} margin {tm:+.1f}), total {tt:g}. "
-        f"Source: {info['source']}." + (f" As of: {info['as_of']}." if info.get("as_of") else ""),
+        f"Source: {info['source']}." + (f" As of: {info['as_of']}." if info.get("as_of") else "")
+        + (f" {info['warning']}" if info.get("warning") else ""),
         f"  Unanchored model: {home} margin {info['base_margin']:+.2f}, total {info['base_total']:.2f}.",
         f"  Offense adjustment (scoring log-odds; implied change in expected points per neutral drive): "
         f"{home} {info['d_home']:+.3f} ({info['ep_home']:+.2f} pts/drive), "

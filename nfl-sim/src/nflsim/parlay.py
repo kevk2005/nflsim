@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+import pandas as pd
 
 from . import odds as O
 from .markets import LOSS, PUSH, VOID, WIN, Leg, grade
@@ -264,6 +265,9 @@ def main(argv=None):
     ap.add_argument("--total", type=float, help="game total for market_anchored; default: nflverse line")
     ap.add_argument("--qb-exits", default="on", choices=["on", "off"],
                     help="simulate starting-QB early exits (default on)")
+    ap.add_argument("--book", help="price legs from this book's snapshot (default: best price per leg)")
+    ap.add_argument("--no-feed-prices", action="store_true",
+                    help="do not look up leg prices in the odds feed when --leg-odds is not given")
     a = ap.parse_args(argv)
     qx = a.qb_exits == "on"
     ctx = load_context()
@@ -271,12 +275,38 @@ def main(argv=None):
     game = simulate_game(ctx, a.game_id, a.sims, seed=a.seed, mode=a.mode,
                          home_spread=a.spread, total=a.total, qb_exits=qx)
     legs = [parse_leg(s, game, names) for s in a.leg]
+    feed_note = []
+    if a.leg_odds is None and not a.no_feed_prices:
+        from . import odds_feed as F
+        sched = F.load_schedule()
+        kickoff = sched.loc[sched.game_id == game.game_id, "kickoff_utc"].iloc[0]
+        found = []
+        for l in legs:
+            p = F.lookup_price(l, game.game_id, kickoff, game.home_team, as_of=F.utcnow(), book=a.book)
+            found.append(p)
+            if p is None:
+                feed_note.append(f"  {l.name()}: no price in the odds feed (exact line, pre-kickoff)")
+            else:
+                feed_note.append(f"  {l.name()}: {p['price']:+.0f} at {p['book']} "
+                                 f"({p['source']} snapshot {pd.Timestamp(p['snapshot_time']):%Y-%m-%d %H:%M UTC}, "
+                                 f"{p['n_books_quoting']} books quoting)")
+        if all(p is not None for p in found):
+            a.leg_odds = [p["price"] for p in found]
+            if a.parlay_odds is None:
+                feed_note.append("  NOTE: no real same-game-parlay price is available from the feed; the parlay "
+                                 "price used is the product of the leg prices, which is not what a sportsbook "
+                                 "would offer for a correlated SGP. Enter --parlay-odds for a real quote.")
+        else:
+            feed_note.append("  Not every leg has a feed price, so EV is not computed (enter --leg-odds).")
     mu = bootstrap_model_uncertainty(ctx, a.game_id, legs, a.bootstrap, a.bootstrap_sims,
                                      seed=a.seed + 1, mode=game.anchor["mode"],
                                      home_spread=a.spread, total=a.total, qb_exits=qx) if a.bootstrap else None
     res = evaluate(game, legs, a.settlement, a.leg_odds, a.parlay_odds, mu)
     print(f"{game.game_id} ({game.away_team} @ {game.home_team}, {game.gameday:%Y-%m-%d}); "
           f"models fit on data before {game.team_model.cutoff:%Y-%m-%d}; N = {a.sims}")
+    if feed_note:
+        print("Leg prices from the odds feed:")
+        print("\n".join(feed_note))
     print(res.summary())
     if len(legs) > 1:
         print("Pairwise correlation of leg wins (from the shared simulations):")
