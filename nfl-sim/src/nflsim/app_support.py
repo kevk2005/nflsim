@@ -24,6 +24,7 @@ from .markets import LOSS, PLAYER_MARKETS, PUSH, VOID, WIN, Leg
 
 LOG_PATH = PROCESSED / "parlay_log.jsonl"
 DEFAULT_BOOK = "fanatics"
+ALL_BOOKS = "All books (best price)"
 GAME_MARKET_NAMES = {"h2h": "Moneyline", "spreads": "Spread", "totals": "Total"}
 QB_MARKETS = {"passing_yards", "passing_tds", "pass_attempts", "completions"}
 RECEIVER_MARKETS = {"receptions", "receiving_yards", "anytime_td"}
@@ -152,6 +153,31 @@ def market_board(game_id: str, book: str, lines: pd.DataFrame, props: pd.DataFra
                                      "player_id", "priceable", "reason", "alternate", "snapshot_time", "leg"])
     b = pd.DataFrame(rows)
     return b.sort_values(["order", "group", "market", "alternate", "point", "side"],
+                         na_position="first").reset_index(drop=True)
+
+
+def market_board_all(game_id: str, lines: pd.DataFrame, props: pd.DataFrame, home: str, away: str,
+                     as_of: pd.Timestamp | None = None) -> pd.DataFrame:
+    """Every book's board merged: one row per offering (same leg), at the best
+    (highest-payout) price, with the book that has it and how many books quote it.
+    Offerings that can't be priced are kept once, greyed out."""
+    boards = []
+    for b in books_for_game(lines, props, game_id):
+        x = market_board(game_id, b, lines, props, home, away, as_of)
+        if len(x):
+            boards.append(x.assign(book=b))
+    if not boards:
+        return market_board(game_id, "", lines, props, home, away, as_of).assign(book=None, n_books=0)
+    d = pd.concat(boards, ignore_index=True)
+    d["dec"] = O.american_to_decimal(d["price"].to_numpy(float))
+    d["key"] = [repr(l) if l is not None else f"{g}|{lab}" for l, g, lab in zip(d["leg"], d["group"], d["label"])]
+    n = d.groupby("key")["book"].nunique()
+    d = d.sort_values("dec", ascending=False).drop_duplicates("key")
+    d["n_books"] = d["key"].map(n)
+    d["label"] = [f"{lab}  ({b}{'' if k == 1 else f', best of {k}'})"
+                  for lab, b, k in zip(d["label"], d["book"], d["n_books"])]
+    d = d.drop(columns=["dec", "key"])
+    return d.sort_values(["order", "group", "market", "alternate", "point", "side"],
                          na_position="first").reset_index(drop=True)
 
 

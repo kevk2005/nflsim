@@ -84,6 +84,15 @@ def test_market_board_partial_pull_keeps_other_markets():
     assert b["snapshot_time"].nunique() >= 2
 
 
+def test_market_board_all_books_best_price():
+    b = A.market_board_all("G1", _lines(), _props(), "PHI", "DAL")
+    ml = b[b["market"] == "Moneyline"]
+    assert len(ml) == 1 and ml["price"].item() == -160 and ml["book"].item() == "draftkings"
+    assert ml["n_books"].item() == 2 and "best of 2" in ml["label"].item()
+    assert (b["leg"].notna() == b["priceable"]).all()
+    assert b["snapshot_time"].max() < KICK                          # still never post-kickoff
+
+
 def test_market_board_as_of_and_empty():
     b = A.market_board("G1", "fanatics", _lines(), _props(), "PHI", "DAL",
                        as_of=KICK - pd.Timedelta(hours=2))

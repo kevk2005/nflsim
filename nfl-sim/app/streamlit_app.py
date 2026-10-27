@@ -36,9 +36,9 @@ def context():
     return load_context()
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=60)
 def snapshots():
-    return A.load_snapshots()
+    return A.load_snapshots()      # refreshed every minute, or with "Reload snapshots"
 
 
 @st.cache_data(show_spinner=False)
@@ -85,8 +85,12 @@ with st.sidebar:
     gi = st.selectbox("Game", range(len(glist)), format_func=lambda i: glist.loc[i, "label"])
     grow = glist.loc[gi]
     game_id = grow["game_id"]
-    books = A.books_for_game(lines, props, game_id)
-    book = st.selectbox("Book", books, index=books.index(A.DEFAULT_BOOK) if A.DEFAULT_BOOK in books else 0)
+    books = A.books_for_game(lines, props, game_id) + [A.ALL_BOOKS]
+    book = st.selectbox("Book", books, index=books.index(A.DEFAULT_BOOK) if A.DEFAULT_BOOK in books else 0,
+                        help=f"'{A.ALL_BOOKS}': every book's lines merged, each at its best price.")
+    if st.button("Reload snapshots", help="Pick up odds pulled since the app started"):
+        snapshots.clear()
+        st.rerun()
     st.header("Simulation")
     modes = ["independent", "market_anchored"]
     mode = st.selectbox("Mode", modes, index=modes.index(best.get("mode", "independent")),
@@ -108,7 +112,10 @@ tab_build, tab_log, tab_bt = st.tabs(["Markets & parlay builder", "My parlays", 
 # Market browser + parlay builder
 # --------------------------------------------------------------------------- #
 with tab_build:
-    board = A.market_board(game_id, book, lines, props, grow["home_team"], grow["away_team"])
+    if book == A.ALL_BOOKS:
+        board = A.market_board_all(game_id, lines, props, grow["home_team"], grow["away_team"])
+    else:
+        board = A.market_board(game_id, book, lines, props, grow["home_team"], grow["away_team"])
     st.subheader(f"{grow['away_team']} @ {grow['home_team']}, {pd.Timestamp(grow['gameday']):%Y-%m-%d}  ·  {book}")
     if board.empty:
         st.warning(f"No pre-kickoff snapshot from {book} for this game.")
@@ -118,7 +125,9 @@ with tab_build:
         age_h = (pd.Timestamp.now(tz="UTC") - snap).total_seconds() / 3600
         when = (f"{snap:%Y-%m-%d %H:%M UTC}" if snap == newest
                 else f"{snap:%Y-%m-%d %H:%M} to {newest:%H:%M UTC} (latest per market)")
-        st.caption(f"Prices: latest pre-kickoff snapshot from {book}, {when}"
+        src = "each book's latest pre-kickoff snapshot, best price per line" if book == A.ALL_BOOKS \
+            else f"latest pre-kickoff snapshot from {book}"
+        st.caption(f"Prices: {src}, {when}"
                    + (f"; oldest {age_h:.1f} h old" if not grow["played"] else " (game played)"))
         if not grow["played"] and age_h > 6:
             st.warning("Snapshot is more than 6 hours old: prices may have moved.")
