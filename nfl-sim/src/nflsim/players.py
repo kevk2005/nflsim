@@ -450,7 +450,9 @@ def fit_team_players(game_id: str, team: str, qb_id: str | None, player_games: p
 # --------------------------------------------------------------------------- #
 STATS = ["pass_att", "completions", "pass_yards", "pass_td", "interceptions", "sacks",
          "targets", "receptions", "rec_yards", "rec_td",
-         "rush_att", "rush_yards", "rush_td"]
+         "rush_att", "rush_yards", "rush_td",
+         # big plays, from the same simulated plays (tail scanner, Milestone 4)
+         "rec_long", "rush_long", "rec_20"]
 
 
 @dataclass
@@ -603,6 +605,7 @@ def simulate_players(sim, tmpl: Templates, teams: dict, rng: np.random.Generator
             addq("rush_att", qr)
             addq("rush_yards", qr, sy)
             addq("rush_td", (sk == SCRAM) & (std == 1))
+            np.maximum.at(st["rush_long"], (ss[qr], qi[qr]), sy[qr].astype(np.int32))
         # Targets
         tm = sk == PASS
         if tm.any() and K:
@@ -618,6 +621,9 @@ def simulate_players(sim, tmpl: Templates, teams: dict, rng: np.random.Generator
             np.add.at(st["receptions"], (s_, r), sc[tm])
             np.add.at(st["rec_yards"], (s_, r), np.where(sc[tm] == 1, sy[tm], 0).astype(np.int32))
             np.add.at(st["rec_td"], (s_, r), std[tm])
+            ry = np.where(sc[tm] == 1, sy[tm], 0).astype(np.int32)
+            np.maximum.at(st["rec_long"], (s_, r), ry)
+            np.add.at(st["rec_20"], (s_, r), (ry >= 20).astype(np.int32))
         # Designed runs
         rm = sk == RUN
         if rm.any() and K:
@@ -633,6 +639,7 @@ def simulate_players(sim, tmpl: Templates, teams: dict, rng: np.random.Generator
             np.add.at(st["rush_att"], (s_, r), 1)
             np.add.at(st["rush_yards"], (s_, r), sy[rm].astype(np.int32))
             np.add.at(st["rush_td"], (s_, r), std[rm])
+            np.maximum.at(st["rush_long"], (s_, r), sy[rm].astype(np.int32))
         stats[side] = st
         team_plays[side] = {
             "completions": np.bincount(ss[sc == 1], minlength=n),
@@ -641,6 +648,9 @@ def simulate_players(sim, tmpl: Templates, teams: dict, rng: np.random.Generator
             "td_drives": np.bincount(D["sim"][(D["side"] == side) & is_td_drive], minlength=n),
             "targets": np.bincount(ss[tm], minlength=n),
             "designed_runs": np.bincount(ss[rm], minlength=n),
+            # game report: offensive plays (no penalties) and dropbacks incl. sacks/scrambles
+            "plays": np.bincount(ss, minlength=n),
+            "dropbacks": np.bincount(ss[np.isin(sk, [PASS, PASS_NT, SACK, SCRAM])], minlength=n),
         }
     return PlayerSim(teams, stats, team_plays, n, actives)
 

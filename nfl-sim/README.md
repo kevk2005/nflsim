@@ -1,7 +1,7 @@
 # nfl-sim
 
 A Monte Carlo simulator for NFL games, built from pregame information. See `../SPEC.md` for the full plan.
-**Status: Milestones 1 (data, team model, drive-level simulator) and 2 (players, markets, parlays, odds) are done, plus a market-anchored simulation mode and a cleanup round (template-leakage check, QB early exits, close-game endings).** Milestone 2.6 (live odds feed that builds our own line history) is done. Milestone 2.7 (correlation fix) is done: a per-game passing shock was tested and built behind `--pass-shock`, but it failed the keep test, so it is **off** by default. Milestone 3 (prop/SGP backtest, real-line ROI, Streamlit market browser and parlay builder) is done.
+**Status: Milestones 1 (data, team model, drive-level simulator) and 2 (players, markets, parlays, odds) are done, plus a market-anchored simulation mode and a cleanup round (template-leakage check, QB early exits, close-game endings).** Milestone 2.6 (live odds feed that builds our own line history) is done. Milestone 2.7 (correlation fix) is done: a per-game passing shock was tested and built behind `--pass-shock`, but it failed the keep test, so it is **off** by default. Milestone 3 (prop/SGP backtest, real-line ROI, Streamlit market browser and parlay builder) is done. Milestone 4 (game report on the Tail scanner page) is built. Its keep test **failed** on one low-level calibration band; receiving stats and pass TDs are trusted, QB volume and rushing are not, and the app greys out untrusted rows.
 
 ## Install
 ```bash
@@ -500,6 +500,78 @@ The 2021 → 2026 week 7 game walk-forward is in "Validation" above (independent
 - **Backtest page:** the config comparison, calibration charts by market and probability bucket, SGP K/N vs independence calibration, and the real-line results.
 - **No API calls:** the app reads saved files only.
 
+## Milestone 4: game report (tail scanner page) — built, keep test **failed** (one low-level band)
+```bash
+.venv/bin/python -m nflsim.tails build-actuals      # official stats + longest plays from pbp (~5 s)
+.venv/bin/python -m nflsim.tails backtest           # 2024 → 2026 wk 7 walk-forward (~7 min), writes tail_report.json
+.venv/bin/python -m nflsim.tails report             # re-score the saved backtest
+.venv/bin/python -m nflsim.gamereport build --days 7 # upcoming games → reports/<game_id>/ (10k sims + 10 bootstrap refits)
+```
+The first Milestone 4 version (flags vs baseline/market) failed on market edge and is retired; see SPEC.md. Market % is now an info column only.
+
+**What a report holds** (`reports/<game_id>/`: CSVs + `report.html` + `meta.json`; also the app's Tail scanner tab):
+- **Game:** win probability; spread, total and team points (mean, 10th/25th/median/75th/90th); drives, plays and pass rate per team; P(team scores 20+/27+/34+). Probabilities carry a Monte Carlo 95% range and a bootstrap model range. In market-anchored mode the mean margin and total are the market's; the spread of outcomes is the simulator's.
+- **Players:** every tracked player (active in ≥ 100 simulations), both teams. Each stat gets its distribution (over simulations where he is active), and hit % at every threshold of the config grid:
+  - every 5 yards for rush/rec yards and longest plays;
+  - every 25 for passing yards;
+  - every 1 for counts.
+  Each hit % has an MC 95% range (Wilson) and a model range (± 1.96 × bootstrap model sd, Monte Carlo noise removed).
+- **Data behind each number:**
+  - role baseline (same pregame depth-chart role, previous two seasons);
+  - his last 16 games played (game log) and his own rate shrunk toward the role with 8 games of weight;
+  - lift = sim − role;
+  - the model inputs with their averages and the main drivers named.
+  - QB passing comes from team drives plus QB EPA in the drive model, not player rates.
+- **Opponent context:** the player model does not use opponent defense by position (not added). The opponent's overall adjusted EPA/success allowed enters the team drive model and is shown.
+- **Correlations:** the strongest positive and negative cross-player/game correlations across simulations. Every pair is in `correlations.csv`.
+- **Market lines (info only):** saved prices with the sim % at the same line.
+
+### Backtest: 2024 → 2026 week 7
+Scope: 676 games, 1,411,452 graded player-thresholds and 94,742 player-stat results. Config: market_anchored, QB exits off, pass shock off, 2,000 sims per game.
+
+The rule was fixed in SPEC.md beforehand:
+- a calibration band passes within 3 points (bands with n < 200 are not scored);
+- the percentile check (randomized PIT) passes within 3 points of 10/50/10%.
+
+**Keep test: FAIL.**
+
+| | Result |
+|---|---|
+| Calibration, low level | **FAIL**: the 40–50% band is sim 44.9% vs actual 41.8% (CI 41.1–42.4). Every low band above 10% runs 1.7–3.1 points high, but only that one is outside 3 points. |
+| Calibration, mid level | PASS (max error 2.0 points) |
+| Calibration, high level | PASS (max error 1.8 points; bands above 50% have n < 200) |
+| Percentiles, pooled | PASS: 12.1% below the 10th percentile, 52.7% below the median, 9.6% above the 90th |
+
+**By stat (percentile check; scored rows = regulars):**
+
+| Stat | Below p10 | Below median | Above p90 | Percentiles | Trusted levels |
+|---|---|---|---|---|---|
+| pass yds | 16.1% | 51.5% | 11.0% | FAIL | none |
+| pass att | 19.6% | 55.5% | 10.5% | FAIL | none |
+| completions | 18.8% | 54.5% | 11.0% | FAIL | none |
+| pass TDs | 10.5% | 49.8% | 12.2% | PASS | low, high |
+| INTs | 11.6% | 54.5% | 7.8% | FAIL | none |
+| rush att | 12.9% | 53.1% | 8.6% | FAIL | none |
+| rush yds | 13.8% | 54.5% | 10.2% | FAIL | none |
+| rush long | 14.4% | 55.5% | 9.4% | FAIL | none |
+| targets | 11.5% | 52.7% | 9.2% | PASS | mid, high |
+| receptions | 10.8% | 52.4% | 9.2% | PASS | high |
+| rec yds | 10.9% | 51.4% | 10.0% | PASS | low, high |
+| rec long | 11.7% | 52.3% | 9.7% | PASS | mid, high |
+| TDs | 10.4% | 52.6% | 9.1% | PASS | none (low and high calibration off) |
+
+- **Receiving is the trustworthy part.** Receiving yards are calibrated within 0.9 points pooled; only the mid level (60–95 yds) runs 3–6 points low.
+- **QB volume is not trustworthy.** Pass attempts and completions land below the sim's 10th percentile 19–20% of the time. Low thresholds are overpredicted by up to 9–10 points (e.g. completions: sim 47% vs actual 37% in one band). Real games have short QB outings, from injuries, benchings and blowouts, that the kept config (QB exits **off**) leaves out.
+- **Rushing runs slightly high** at low thresholds and low at mid thresholds. Medians land a little high (actual below the sim median 54–56% of the time).
+- The sim beats the role baseline on Brier for all 13 stats. It beats the player's shrunk own rate for 10 of 13. The three exceptions are pass attempts (0.1687 vs 0.1673), completions (0.1513 vs 0.1510) and rush long (0.0816 vs 0.0810).
+- Nothing was tuned after seeing the results.
+
+### App: Tail scanner tab = game report
+- **Controls:** game picker (saved reports), plus a button to build the report for the sidebar game (~30 s, saved odds only).
+- **Sections:** team section, correlations, and a sortable/filterable table of every player-threshold (by lift, hit % or threshold height; team/position/level/stat/trusted-only/min P(active)).
+- **Player expanders:** distribution, model inputs, saved market lines, game log and every threshold.
+- **Trust:** untrusted stat × level rows are greyed with the reason. The backtest expander shows the bands with CIs and the percentile table.
+
 ## Odds feed (Milestone 2.6): The Odds API, live pulls + one approved 2026 backfill
 **Live pulls build our own history, plus one approved 2026 backfill.** Routine pulls are for **upcoming** games only. The single exception is a one-time, approved backfill of the 2026 season to date (see below). Outside that approved run the client refuses every `/historical/` endpoint. **Every live pull is saved permanently with its UTC pull time** (raw JSON plus normalized rows, never overwritten), so each pull adds to a line history we build ourselves going forward. That history is what Milestone 3 will use for prop ROI (see SPEC.md).
 
@@ -616,7 +688,7 @@ Two kinds, always reported separately:
 - **Kickoff rule changes (2024, 2025)**: field position after kicks comes from the most recent 1,200 kicks, so the model takes part of a season to adapt after a rule change.
 - Schemes, coaching changes and pressure/charting data are not used.
 
-## Milestone 4 backlog: QB availability and backup quality (not started)
+## Milestone 5 backlog: QB availability and backup quality (not started)
 1. **Split the offense rating into QB and non-QB parts.** Rate the rest of the offense separately, then add the expected starter's rating. Currently `off_epa` still contains the previous QB's plays and is only corrected by `qb_delta`.
 2. **Data-driven prior for QBs with little history.** The prior is currently **hand-set**: league-average EPA/dropback minus 0.10 (`RatingParams.qb_prior_offset`). Estimate it instead from how comparable QBs played in their first starts, using draft round, years in the league and depth-chart rank (nflverse draft picks and rosters).
 3. **Tune the QB rating's prior strength and recency** (currently 250 dropbacks and a 12-game half-life, also not tuned). Tune on the 2018–2020 validation window only.

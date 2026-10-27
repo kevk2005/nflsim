@@ -171,7 +171,88 @@ Hypothesis: real games have a shared per-game passing shock (one team's whole pa
 - The backtest runs end to end and produces real calibration results.
 - The app runs locally, browses a game's saved markets for a chosen book, evaluates a multi-leg parlay for an upcoming or historical game, and grades and logs parlays after the game.
 
-## Milestone 4: More pregame context (in priority order)
+## Milestone 4: Game report (tail scanner page)
+**Status: DONE (built; keep test FAILED: one low-level calibration band)**
+
+**Result** (2024 → 2026 wk 7; 676 games, 1,411,452 graded player-thresholds, 94,742 player-stat results):
+- **Calibration:**
+  - low **FAIL**: the 40–50% band is sim 44.9% vs actual 41.8%; every low band above 10% runs 1.7–3.1 points high;
+  - mid PASS (max 2.0 points);
+  - high PASS (max 1.8 points).
+- **Percentiles, pooled: PASS.** 12.1% below p10, 52.7% below median, 9.6% above p90.
+- **By stat:**
+  - percentiles PASS for pass TDs, targets, receptions, rec yds, rec long and TDs;
+  - FAIL for pass yds, pass att, completions, INTs, rush att, rush yds and rush long. QB attempts/completions are below the sim's p10 19–20% of the time: short real outings that the kept config (QB exits off) leaves out.
+- **Trusted stat × level:** pass TDs low/high, targets mid/high, receptions high, rec yds low/high, rec long mid/high. Everything else is greyed in the app with its reason.
+- **No tuning.**
+
+
+**Earlier version (superseded the same day).** The first Milestone 4 flagged player-thresholds where the sim was above the player's baseline or the market. Its keep test FAILED on market edge: 133 sim-above-market spots, actual minus market −5.7 points (CI −11.9 to +1.0), ROI −31.9%. High-threshold calibration passed (largest bucket error 1.1 points). That keep test is retired. Market comparison is now an info column only.
+
+**Goal:** one full report per upcoming game showing everything the simulator says happens, with the data behind each number. No probability cutoff.
+
+**1. Game report**
+- **Team / game level:**
+  - win probability;
+  - spread (home margin), total and each team's points: mean, median, 10th/25th/75th/90th percentiles;
+  - drives, plays and pass rate per team;
+  - P(team scores 20+ / 27+ / 34+).
+  - Probabilities carry a Monte Carlo 95% range and a bootstrap (model) range.
+- **Player level:** every player the sim tracks (both teams; active in at least 100 simulations).
+  - Stats: pass yds, pass att, completions, pass TDs, INTs, rush att, rush yds, rush long, targets, receptions, rec yds, rec long, TDs. Each stat applies to its positions.
+  - For each stat: mean, median, 10th/25th/75th/90th percentiles over the simulations where the player is active.
+  - A player's stat is left out when it is zero in every active simulation (e.g. a backup QB's passing with QB exits off).
+  - Hit % at every threshold on a finer grid (config `nfl-sim/config/tail_thresholds.toml`):
+    - every 5 yards for rush/rec yards and longest plays;
+    - every 25 for passing yards;
+    - every 1 for counts.
+  - Each threshold carries a level by height, fixed in the config before the backtest (e.g. rec/rush yards: low < 60, mid 60–95, high 100+).
+  - Each hit % has a Monte Carlo 95% range (Wilson) and a bootstrap model range (± 1.96 × the model sd from 10 refits, with Monte Carlo noise removed).
+
+**2. Data behind each number**
+- **Role baseline:** hit rate of a typical player in the same pregame role (QB1, RB1, WR2, TE1, ...) over the previous two seasons, before the game.
+- **Player history:** game log of his last 16 games played, plus his own hit rate shrunk toward the role baseline with a prior worth 8 games.
+- **Usage inputs:** the model's actual inputs, compared with the role/position average, with the main drivers named.
+  - Receivers and backs: target share, catch rate, yards-bin mix (share of catches of 20+ yards), TD-rate multiplier, carry share, share of carries of 10+ yards, P(active).
+  - QB passing: comes from the team drive model, not from player-level rates.
+- **Opponent context:** the player model does **not** use opponent defense by position, and that is not added. The opponent's overall defense (opponent-adjusted EPA and success rate allowed) enters the team drive model and is shown.
+- **Lift** = sim % − role baseline %. The report sorts by lift, hit % and threshold height.
+- **Market %:** info only, from saved prices.
+
+**3. Correlations**
+- Per game: the strongest positive and negative correlations across simulations between legs. Legs are team win, total, team points and the main players' stats.
+- Same-player pairs and game-level identities are excluded from the top lists but kept in the export.
+
+**4. Output**
+- The Streamlit "Tail scanner" page becomes the game report: game picker, team section, expandable player sections, sorting and filters.
+- Each game is exported to `nfl-sim/reports/<game_id>/` as CSV tables plus a readable `report.html`.
+
+**Backtest:**
+- 2024 → 2026 wk 7, weekly refits, no peeking.
+- Pass shock off; the Milestone 3 kept config (market_anchored, QB exits off).
+- 2,000 simulations per game, Monte Carlo only (no bootstrap refits in the backtest).
+- Graded only when the player played. Actuals are official stats; longest plays come from play-by-play.
+
+**Keep rule (written 2026-10-27, before the backtest is run):**
+- **Calibration bands:** sim probability in [0, .1), [.1, .2), …, [.9, 1.0].
+  - A band passes if |mean sim − actual rate| ≤ 0.03.
+  - Bands with n < 200 are reported but not scored.
+  - Each band reports a 95% CI on the actual rate from a bootstrap that resamples games.
+- **Percentile check:** randomized PIT (P(X < actual) + U·P(X = actual)), so ties in counts are handled.
+  - Share below the sim's 10th percentile (PIT < .1) must be within 3 points of 10%.
+  - Share below the median (PIT < .5) must be within 3 points of 50%.
+  - Share above the 90th percentile (PIT > .9) must be within 3 points of 10%.
+  - Scored rows: the player is active in ≥ 50% of simulations, and the stat is nonzero in ≥ 50% of his active simulations (≥ 25% for TDs). Other rows are reported only.
+- **Overall PASS needs both:**
+  - (a) every scored band passes within each level (low, mid, high), pooling stats;
+  - (b) the percentile check passes pooled over all stats.
+- **Trust labels:** reported by stat type, by level, and by stat × level.
+  - A stat × level is trusted when all its scored bands pass and its stat's percentile check passes.
+  - "Not enough data" means no scored band.
+  - The app greys out untrusted stat × level rows and gives the reason.
+- **If it fails, it is reported as a failure. No tuning until it passes.**
+
+## Milestone 5: More pregame context (in priority order)
 **Status: NOT STARTED**
 
 Add one at a time, and keep each only if the walk-forward test shows it helps:
@@ -187,7 +268,7 @@ Add one at a time, and keep each only if the walk-forward test shows it helps:
 - **Team pass tendency / clock-neutral pass shock (from Milestone 2.7):** about half the within-game pass-volume correlation is a persistent team pass tendency (pregame-predictable; templates are league-wide). A shock that leaves run volume and drive clock unchanged might avoid 2.7's side effects. Each needs its own keep test.
 - **Prop prices on real lines (from Milestone 3):** the model is overconfident against book lines and adds no information beyond them. Candidates: shrink player-level means toward the market line, or widen player distributions where the market disagrees. Each needs its own walk-forward test on saved lines.
 - **Unmatched odds player names:** 13 names remain from the 2026 backfill (e.g. "Joshua Palmer"). Each needs a by-hand roster check, then an entry in the reviewed alias list (`odds_feed.REVIEWED_ALIASES`; "Hollywood Brown" → Marquise Brown was added 2026-10-26). No fuzzy matching.
-- **Milestone 4 QB items (from the README backlog):** split the offense rating into QB and non-QB parts; a data-driven prior for QBs with little history (the current −0.10 EPA prior is hand-set); tune the QB rating's prior strength and recency on 2018–2020; use Questionable/Doubtful status and practice participation for the probability that the listed starter plays.
+- **Milestone 5 QB items (from the README backlog):** split the offense rating into QB and non-QB parts; a data-driven prior for QBs with little history (the current −0.10 EPA prior is hand-set); tune the QB rating's prior strength and recency on 2018–2020; use Questionable/Doubtful status and practice participation for the probability that the listed starter plays.
 
 ## Final report (after each milestone and at the end)
 - How to install and run everything (data download, tests, backtest, app).

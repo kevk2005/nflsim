@@ -1,0 +1,156 @@
+# Game report / tail scanner (Milestone 4) settings. `python -m nflsim.tails ...` reads this file.
+#
+# Each [[stat]] gives the threshold grid for one simulated stat: "player records at least t"
+# for t = from, from + step, ..., to. Level by height:
+#   low  t < mid_from,   mid  mid_from <= t < high_from,   high  t >= high_from
+#   stat:      pass_yards, pass_att, completions, pass_td, interceptions, rush_att, rush_yards,
+#              rush_long, targets, receptions, rec_yards, rec_long, tds (rushing + receiving TDs)
+#   positions: positions the stat is reported for (QB, RB, FB, WR, TE)
+#   market:    saved prop market that prices it at line t - 0.5 (anytime_td: "yes" at 1 TD);
+#              info only. Omit when no saved market can price it.
+# The keep rule and level breaks are fixed in SPEC.md (Milestone 4) before the backtest
+# runs; changing them here after seeing results is tuning.
+
+[baseline]
+window_games = 16      # player's own last N games played, before the game
+prior_games = 8        # shrink toward the role average with a prior worth this many games
+prior_seasons = 2      # role average from games in the previous N seasons (before the cutoff)
+
+[report]
+min_active_sims = 100  # players active in fewer simulations are left out
+corr_top = 12          # strongest positive / negative correlations shown per game
+
+[keep_rule]
+calibration_bands = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+calibration_tolerance = 0.03
+calibration_min_band_n = 200
+percentile_tolerance = 0.03
+pit_min_active = 0.5        # scored percentile rows: active in >= 50% of simulations ...
+pit_min_nonzero = 0.5       # ... and the stat nonzero in >= 50% of his active simulations
+pit_min_nonzero_tds = 0.25  # (TDs: >= 25%)
+
+[[stat]]
+stat = "pass_yards"
+positions = ["QB"]
+from = 150
+to = 400
+step = 25
+mid_from = 275
+high_from = 325
+market = "passing_yards"
+
+[[stat]]
+stat = "pass_att"
+positions = ["QB"]
+from = 20
+to = 45
+step = 1
+mid_from = 35
+high_from = 40
+market = "pass_attempts"
+
+[[stat]]
+stat = "completions"
+positions = ["QB"]
+from = 12
+to = 32
+step = 1
+mid_from = 22
+high_from = 27
+market = "completions"
+
+[[stat]]
+stat = "pass_td"
+positions = ["QB"]
+from = 1
+to = 4
+step = 1
+mid_from = 3
+high_from = 4
+market = "passing_tds"
+
+[[stat]]
+stat = "interceptions"
+positions = ["QB"]
+from = 1
+to = 3
+step = 1
+mid_from = 2
+high_from = 3
+
+[[stat]]
+stat = "rush_att"
+positions = ["QB", "RB", "FB"]
+from = 1
+to = 25
+step = 1
+mid_from = 15
+high_from = 20
+market = "rush_attempts"
+
+[[stat]]
+stat = "rush_yards"
+positions = ["QB", "RB", "FB"]
+from = 5
+to = 150
+step = 5
+mid_from = 60
+high_from = 100
+market = "rushing_yards"
+
+[[stat]]
+stat = "rush_long"
+positions = ["QB", "RB", "FB"]
+from = 5
+to = 50
+step = 5
+mid_from = 30
+high_from = 40
+
+[[stat]]
+stat = "targets"
+positions = ["RB", "FB", "WR", "TE"]
+from = 1
+to = 14
+step = 1
+mid_from = 7
+high_from = 10
+
+[[stat]]
+stat = "receptions"
+positions = ["RB", "FB", "WR", "TE"]
+from = 1
+to = 12
+step = 1
+mid_from = 7
+high_from = 9
+market = "receptions"
+
+[[stat]]
+stat = "rec_yards"
+positions = ["RB", "FB", "WR", "TE"]
+from = 5
+to = 150
+step = 5
+mid_from = 60
+high_from = 100
+market = "receiving_yards"
+
+[[stat]]
+stat = "rec_long"
+positions = ["RB", "FB", "WR", "TE"]
+from = 5
+to = 50
+step = 5
+mid_from = 30
+high_from = 40
+
+[[stat]]
+stat = "tds"
+positions = ["QB", "RB", "FB", "WR", "TE"]
+from = 1
+to = 3
+step = 1
+mid_from = 2
+high_from = 2
+market = "anytime_td"

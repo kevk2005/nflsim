@@ -91,6 +91,9 @@ def test_market_board_all_books_best_price():
     assert ml["n_books"].item() == 2 and "best of 2" in ml["label"].item()
     assert (b["leg"].notna() == b["priceable"]).all()
     assert b["snapshot_time"].max() < KICK                          # still never post-kickoff
+    plain = A.market_board_all("G1", _lines(), _props(), "PHI", "DAL", show_book=False)
+    assert plain["price"].tolist() == b["price"].tolist()          # same pooled prices ...
+    assert not plain["label"].str.contains("draftkings|fanatics|best of").any()   # ... as one book
 
 
 def test_market_board_as_of_and_empty():

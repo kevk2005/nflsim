@@ -25,6 +25,7 @@ from .markets import LOSS, PLAYER_MARKETS, PUSH, VOID, WIN, Leg
 LOG_PATH = PROCESSED / "parlay_log.jsonl"
 DEFAULT_BOOK = "fanatics"
 ALL_BOOKS = "All books (best price)"
+POOLED = "pooled"       # the app's single "book": every saved book merged, best price per line
 GAME_MARKET_NAMES = {"h2h": "Moneyline", "spreads": "Spread", "totals": "Total"}
 QB_MARKETS = {"passing_yards", "passing_tds", "pass_attempts", "completions"}
 RECEIVER_MARKETS = {"receptions", "receiving_yards", "anytime_td"}
@@ -157,10 +158,11 @@ def market_board(game_id: str, book: str, lines: pd.DataFrame, props: pd.DataFra
 
 
 def market_board_all(game_id: str, lines: pd.DataFrame, props: pd.DataFrame, home: str, away: str,
-                     as_of: pd.Timestamp | None = None) -> pd.DataFrame:
+                     as_of: pd.Timestamp | None = None, show_book: bool = True) -> pd.DataFrame:
     """Every book's board merged: one row per offering (same leg), at the best
     (highest-payout) price, with the book that has it and how many books quote it.
-    Offerings that can't be priced are kept once, greyed out."""
+    Offerings that can't be priced are kept once, greyed out. show_book=False
+    leaves the labels plain, as if every price came from one book."""
     boards = []
     for b in books_for_game(lines, props, game_id):
         x = market_board(game_id, b, lines, props, home, away, as_of)
@@ -174,8 +176,9 @@ def market_board_all(game_id: str, lines: pd.DataFrame, props: pd.DataFrame, hom
     n = d.groupby("key")["book"].nunique()
     d = d.sort_values("dec", ascending=False).drop_duplicates("key")
     d["n_books"] = d["key"].map(n)
-    d["label"] = [f"{lab}  ({b}{'' if k == 1 else f', best of {k}'})"
-                  for lab, b, k in zip(d["label"], d["book"], d["n_books"])]
+    if show_book:
+        d["label"] = [f"{lab}  ({b}{'' if k == 1 else f', best of {k}'})"
+                      for lab, b, k in zip(d["label"], d["book"], d["n_books"])]
     d = d.drop(columns=["dec", "key"])
     return d.sort_values(["order", "group", "market", "alternate", "point", "side"],
                          na_position="first").reset_index(drop=True)

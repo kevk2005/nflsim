@@ -9,3 +9,5 @@ __pycache__/
 nfl-sim/data/
 # secrets / local settings
 nfl-sim/.env
+# generated game reports (rebuild: python -m nflsim.gamereport build)
+nfl-sim/reports/
